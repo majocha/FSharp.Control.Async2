@@ -1,0 +1,11 @@
+<Solution>
+  <Configurations>
+    <Platform Name="Any CPU" />
+    <Platform Name="x64" />
+    <Platform Name="x86" />
+  </Configurations>
+  <Folder Name="/tests/">
+    <Project Path="tests/FSharp.Control.Async2.Tests/FSharp.Control.Async2.Tests.fsproj" />
+  </Folder>
+  <Project Path="FSharp.Control.Async2.fsproj" />
+</Solution>
