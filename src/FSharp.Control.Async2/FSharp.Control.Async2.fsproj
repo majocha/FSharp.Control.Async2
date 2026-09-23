@@ -7,6 +7,6 @@
     <RootNamespace>Microsoft.FSharp.Control</RootNamespace>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Include="src\FSharp.Control.Async2\Async2Runtime.fs" />
+    <Compile Include="Async2Runtime.fs" />
   </ItemGroup>
 </Project>

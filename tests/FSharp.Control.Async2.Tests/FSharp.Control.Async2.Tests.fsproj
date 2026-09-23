@@ -14,7 +14,6 @@
     <Compile Include="AsyncModule.fs" />
     <Compile Include="AsyncModuleFunctions.fs" />
     <Compile Include="AsyncCompilerRegressionTests.fs" />
-    <ProjectReference Include="..\..\FSharp.Control.Async2.fsproj" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="xunit.v3.mtp-v2" Version="3.2.2" />
@@ -22,6 +21,9 @@
     <PackageReference Include="xunit.v3.common" Version="3.2.2" />
     <PackageReference Include="xunit.v3.assert" Version="3.2.2" />
     <PackageReference Include="xunit.v3.extensibility.core" Version="3.2.2" GeneratePathProperty="true" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\FSharp.Control.Async2\FSharp.Control.Async2.fsproj" />
   </ItemGroup>
   <ItemGroup>
     <Reference Include="xunit.v3.core" HintPath="$(Pkgxunit_v3_extensibility_core)\lib\netstandard2.0\xunit.v3.core.dll" />

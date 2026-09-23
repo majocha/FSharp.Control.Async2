@@ -155,8 +155,12 @@ module TasklikeHelpers =
     module Awaiter =
         let inline getResult (awaiter: Awaiter<_, _>) = awaiter.GetResult()
 
+        let inline isCompleted (awaiter: Awaiter<_, _>) = awaiter.get_IsCompleted()
+
     module Awaitable =
         let inline getAwaiter (awaitable: Awaitable<_, _, _>) = awaitable.GetAwaiter()
+
+open TasklikeHelpers
 
 type [<Sealed; NoEquality; NoComparison; CompiledName("FSharpAsync2`1")>] Async2<'T>
     (start: CancellationToken -> Task<'T>) =
@@ -165,31 +169,31 @@ type [<Sealed; NoEquality; NoComparison; CompiledName("FSharpAsync2`1")>] Async2
     member this.Start(cancellationToken: CancellationToken) =
         start cancellationToken
 
-type RuntimeAsyncStarted<'T> = delegate of unit -> 'T
-type RuntimeAsyncCancellable<'T> = delegate of CancellationToken -> 'T
+type Started<'T> = delegate of unit -> 'T
+type Cancellable<'T> = delegate of CancellationToken -> 'T
 
-module RuntimeAsyncBuilderHelpers =
-    [<NoEagerConstraintApplication>]
-    let inline startAwaitable (awaitable: TasklikeHelpers.Awaitable<_, _, _>) =
-        let awaiter = TasklikeHelpers.Awaitable.getAwaiter awaitable
+module TasklikeSourceHelpers =
+    let inline startAwaitable (awaitable: Awaitable<_, _, _>) =
+        let awaiter = Awaitable.getAwaiter awaitable
 
-        RuntimeAsyncStarted(fun () ->
-            AsyncHelpers.UnsafeAwaitAwaiter awaiter
-            TasklikeHelpers.Awaiter.getResult awaiter)
+        Started(fun () ->
+            if not (Awaiter.isCompleted awaiter) then
+                AsyncHelpers.UnsafeAwaitAwaiter awaiter
+            Awaiter.getResult awaiter)
 
-    [<NoEagerConstraintApplication>]
     let inline startCancellableAwaitable
-        (cancellableAwaitable: CancellationToken -> TasklikeHelpers.Awaitable<_, _, _>)
+        (cancellableAwaitable: CancellationToken -> Awaitable<_, _, _>)
         =
-        RuntimeAsyncCancellable(fun ct ->
+        Cancellable(fun ct ->
             let awaiter =
                 cancellableAwaitable ct
-                |> TasklikeHelpers.Awaitable.getAwaiter
+                |> Awaitable.getAwaiter
 
-            AsyncHelpers.UnsafeAwaitAwaiter awaiter
-            TasklikeHelpers.Awaiter.getResult awaiter)
+            if not (Awaiter.isCompleted awaiter) then
+                AsyncHelpers.UnsafeAwaitAwaiter awaiter
+            Awaiter.getResult awaiter)
 
-open RuntimeAsyncBuilderHelpers
+open TasklikeSourceHelpers
 
 type CancellableRuntimeAsyncBuilder() =
     member inline _.Delay
@@ -282,7 +286,7 @@ type CancellableRuntimeAsyncBuilder() =
 
     member inline _.Bind
         (
-            [<InlineIfLambda>] awaited: RuntimeAsyncStarted<'T>,
+            [<InlineIfLambda>] awaited: Started<'T>,
             [<InlineIfLambda>] continuation: 'T -> CancellationToken -> 'U
         ) : CancellationToken -> 'U =
         fun ct ->
@@ -291,7 +295,7 @@ type CancellableRuntimeAsyncBuilder() =
 
     member inline _.Bind
         (
-            [<InlineIfLambda>] cancellable: RuntimeAsyncCancellable<'T>,
+            [<InlineIfLambda>] cancellable: Cancellable<'T>,
             [<InlineIfLambda>] continuation: 'T -> CancellationToken -> 'U
         ) : CancellationToken -> 'U =
         fun ct ->
@@ -313,7 +317,7 @@ type CancellableRuntimeAsyncBuilder() =
             AsyncHelpers.Await(computation.Start ct)
 
     member inline _.MergeSources
-        ([<InlineIfLambda>] left: RuntimeAsyncStarted<'A>, [<InlineIfLambda>] right: RuntimeAsyncStarted<'B>)
+        ([<InlineIfLambda>] left: Started<'A>, [<InlineIfLambda>] right: Started<'B>)
         =
         let left = left.Invoke()
         let right = right.Invoke()
@@ -321,8 +325,8 @@ type CancellableRuntimeAsyncBuilder() =
 
     member inline _.MergeSources
         (
-            [<InlineIfLambda>] left: RuntimeAsyncCancellable<'A>,
-            [<InlineIfLambda>] right: RuntimeAsyncCancellable<'B>
+            [<InlineIfLambda>] left: Cancellable<'A>,
+            [<InlineIfLambda>] right: Cancellable<'B>
         ) =
         RuntimeAsyncCancellable(fun ct ->
             let rightTask = __runtimeAsyncReturnValueTask (right.Invoke ct)
@@ -331,8 +335,8 @@ type CancellableRuntimeAsyncBuilder() =
 
     member inline _.MergeSources
         (
-            [<InlineIfLambda>] left: RuntimeAsyncStarted<'A>,
-            [<InlineIfLambda>] right: RuntimeAsyncCancellable<'B>
+            [<InlineIfLambda>] left: Started<'A>,
+            [<InlineIfLambda>] right: Cancellable<'B>
         ) =
         RuntimeAsyncCancellable(fun ct ->
             let rightValue = right.Invoke ct
@@ -341,8 +345,8 @@ type CancellableRuntimeAsyncBuilder() =
 
     member inline _.MergeSources
         (
-            [<InlineIfLambda>] left: RuntimeAsyncCancellable<'A>,
-            [<InlineIfLambda>] right: RuntimeAsyncStarted<'B>
+            [<InlineIfLambda>] left: Cancellable<'A>,
+            [<InlineIfLambda>] right: Started<'B>
         ) =
         RuntimeAsyncCancellable(fun ct ->
             let leftValue = left.Invoke ct
