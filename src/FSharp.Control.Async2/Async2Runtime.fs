@@ -321,14 +321,14 @@ type CancellableRuntimeAsyncBuilder() =
         =
         let left = left.Invoke()
         let right = right.Invoke()
-        RuntimeAsyncStarted(fun () -> struct (left, right))
+        Started(fun () -> struct (left, right))
 
     member inline _.MergeSources
         (
             [<InlineIfLambda>] left: Cancellable<'A>,
             [<InlineIfLambda>] right: Cancellable<'B>
         ) =
-        RuntimeAsyncCancellable(fun ct ->
+        Cancellable(fun ct ->
             let rightTask = __runtimeAsyncReturnValueTask (right.Invoke ct)
             let leftValue = left.Invoke ct
             struct (leftValue, AsyncHelpers.Await rightTask))
@@ -338,7 +338,7 @@ type CancellableRuntimeAsyncBuilder() =
             [<InlineIfLambda>] left: Started<'A>,
             [<InlineIfLambda>] right: Cancellable<'B>
         ) =
-        RuntimeAsyncCancellable(fun ct ->
+        Cancellable(fun ct ->
             let rightValue = right.Invoke ct
             let leftValue = left.Invoke()
             struct (leftValue, rightValue))
@@ -348,7 +348,7 @@ type CancellableRuntimeAsyncBuilder() =
             [<InlineIfLambda>] left: Cancellable<'A>,
             [<InlineIfLambda>] right: Started<'B>
         ) =
-        RuntimeAsyncCancellable(fun ct ->
+        Cancellable(fun ct ->
             let leftValue = left.Invoke ct
             let rightValue = right.Invoke()
             struct (leftValue, rightValue))
