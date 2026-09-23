@@ -66,14 +66,9 @@ module internal Async2RuntimeHelpers =
                 Task.Delay(Timeout.Infinite, cancellationToken)
 
             let winner =
-                AsyncHelpers.Await(
-                    Task.WhenAny(
-                        [| task :> Task
-                           cancellationTask :> Task |]
-                    )
-                )
+                AsyncHelpers.Await(Task.WhenAny(task, cancellationTask))
 
-            if obj.ReferenceEquals(winner, task :> Task) then
+            if obj.ReferenceEquals(winner, task) then
                 AsyncHelpers.Await task
             else
                 cancellationToken.ThrowIfCancellationRequested()
@@ -86,12 +81,7 @@ module internal Async2RuntimeHelpers =
                 Task.Delay(Timeout.Infinite, cancellationToken)
 
             let winner =
-                AsyncHelpers.Await(
-                    Task.WhenAny(
-                        [| task
-                           cancellationTask :> Task |]
-                    )
-                )
+                AsyncHelpers.Await(Task.WhenAny(task, cancellationTask))
 
             if obj.ReferenceEquals(winner, task) then
                 AsyncHelpers.Await task
@@ -101,18 +91,14 @@ module internal Async2RuntimeHelpers =
 
     let awaitValueTaskWithCancellation (cancellationToken: CancellationToken) (task: ValueTask<'T>) =
         __runtimeAsyncReturn (
+            let task = task.AsTask()
             let cancellationTask =
                 Task.Delay(Timeout.Infinite, cancellationToken)
 
             let winner =
-                AsyncHelpers.Await(
-                    Task.WhenAny(
-                        [| task.AsTask() :> Task
-                           cancellationTask :> Task |]
-                    )
-                )
+                AsyncHelpers.Await(Task.WhenAny(task, cancellationTask))
 
-            if obj.ReferenceEquals(winner, task.AsTask() :> Task) then
+            if obj.ReferenceEquals(winner, task) then
                 AsyncHelpers.Await task
             else
                 cancellationToken.ThrowIfCancellationRequested()
@@ -126,12 +112,7 @@ module internal Async2RuntimeHelpers =
                 Task.Delay(Timeout.Infinite, cancellationToken)
 
             let winner =
-                AsyncHelpers.Await(
-                    Task.WhenAny(
-                        [| task
-                           cancellationTask :> Task |]
-                    )
-                )
+                AsyncHelpers.Await(Task.WhenAny(task, cancellationTask))
 
             if obj.ReferenceEquals(winner, task) then
                 AsyncHelpers.Await task
@@ -509,14 +490,9 @@ type Async2 =
                     use timeoutTask = Task.Delay(timeout, ct)
 
                     let winner =
-                        AsyncHelpers.Await(
-                            Task.WhenAny(
-                                [| childTask :> Task
-                                   timeoutTask :> Task |]
-                            )
-                        )
+                        AsyncHelpers.Await(Task.WhenAny(childTask, timeoutTask))
 
-                    if obj.ReferenceEquals(winner, timeoutTask :> Task) then
+                    if obj.ReferenceEquals(winner, timeoutTask) then
                         childCancellation.Cancel()
                         raise (TimeoutException())
 
@@ -844,8 +820,7 @@ type Async2 =
 module Async2TaskLikeExtensions =
     type Async2 with
         [<NoEagerConstraintApplication>]
-        static member inline Await
-            < ^TaskLike, ^Awaiter, 'T
+        static member inline Await< ^TaskLike, ^Awaiter, 'T
             when ^TaskLike: (member GetAwaiter: unit -> ^Awaiter)
             and ^Awaiter :> ICriticalNotifyCompletion
             and ^Awaiter: (member get_IsCompleted: unit -> bool)
@@ -859,8 +834,7 @@ module Async2TaskLikeExtensions =
                     awaiter.GetResult()))
 
         [<NoEagerConstraintApplication>]
-        static member inline StartTaskImmediate
-            < ^TaskLike, ^Awaiter, 'T
+        static member inline StartTaskImmediate< ^TaskLike, ^Awaiter, 'T
             when ^TaskLike: (member GetAwaiter: unit -> ^Awaiter)
             and ^Awaiter :> ICriticalNotifyCompletion
             and ^Awaiter: (member get_IsCompleted: unit -> bool)
@@ -911,7 +885,6 @@ module CommonExtensions =
                     member _.OnError(_) = ()
                     member _.OnCompleted() = () }
             )
-            :> IDisposable
 
     type WebRequest with
         member request.AsyncGetResponse() =
