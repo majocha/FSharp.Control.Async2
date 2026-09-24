@@ -66,6 +66,7 @@ module internal Async2RuntimeHelpers =
     let cancellationTokenAsync = Async2(fun ct -> __runtimeAsyncReturn ct)
 
 open Async2RuntimeHelpers
+open System.Runtime.ExceptionServices
 
 [<Sealed; CompiledName("FSharpAsync2")>]
 type Async2 =
@@ -179,30 +180,44 @@ type Async2 =
     static member Parallel
         (computations: seq<Async2<'T>>, ?maxDegreeOfParallelism: int)
         : Async2<'T array> =
-        match maxDegreeOfParallelism with
-        | None -> Async2.Parallel computations
-        | Some maxDegreeOfParallelism ->
-            if maxDegreeOfParallelism <= 0 then
-                invalidArg "maxDegreeOfParallelism" "maxDegreeOfParallelism must be positive"
+        let computations = computations |> Seq.toArray
+        let results = Array.zeroCreate<'T> computations.Length
+        let maxDegreeOfParallelism = defaultArg maxDegreeOfParallelism computations.Length
 
-            Async2(fun ct ->
-                __runtimeAsyncReturn (
-                    use gate = new SemaphoreSlim(maxDegreeOfParallelism)
+        if maxDegreeOfParallelism < 1 then
+            invalidArg "maxDegreeOfParallelism" (sprintf "maxDegreeOfParallelism must be positive, was %d" maxDegreeOfParallelism)
 
-                    let run (computation: Async2<'T>) : Task<'T> =
-                        Task.Run(Func<'T>(fun () ->
-                            gate.Wait ct
+        async2 {
+            use semaphore = new SemaphoreSlim(maxDegreeOfParallelism, maxDegreeOfParallelism)
+            use cts = new CancellationTokenSource()
+            let mutable edi = None
+            for i, computation in computations |> Seq.indexed do
+                do! semaphore.WaitAsync()
+                let single = 
+                    async2 {
+                        try 
+                            try 
+                                let! result = computation
+                                results[i] <- result
+                            with
+                            | :? OperationCanceledException as ex -> ()
+                            | error ->
+                                if cts.IsCancellationRequested then
+                                    ()
+                                else
+                                    edi <- ExceptionDispatchInfo.Capture error |> Some
+                                    cts.Cancel()
+                        finally
+                            semaphore.Release() |> ignore }
+                Async2.Start(single, cts.Token)
+                edi |> Option.iter _.Throw()
 
-                            try
-                                (computation.Start ct).GetAwaiter().GetResult()
-                            finally
-                                gate.Release() |> ignore), CancellationToken.None)
+            // wait for all tasks to complete
+            for i in 1 .. maxDegreeOfParallelism do
+                do! semaphore.WaitAsync()
 
-                    computations
-                    |> Seq.map run
-                    |> Seq.toArray
-                    |> fun tasks -> Task.WhenAll(tasks)
-                    |> AsyncHelpers.Await))
+            return results
+        }
 
     static member Sequential(computations: seq<Async2<'T>>) : Async2<'T array> =
         Async2(fun ct ->
