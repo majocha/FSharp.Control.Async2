@@ -31,21 +31,21 @@ module internal Async2RuntimeHelpers =
     let getToken token =
         defaultArg token (getDefaultCancellationToken ())
 
-    let startOnThreadPool (start: CancellationToken -> Task<'T>) cancellationToken taskCreationOptions =
-        let task = Task.Run<'T>((fun () -> start cancellationToken), cancellationToken)
-        match taskCreationOptions with
-        | None -> task
-        | Some options ->
-            let tcs = TaskCompletionSource<'T>(options)
-            let continuation (task: Task<'T>) =
-                if task.IsCompletedSuccessfully then
-                    tcs.SetResult(task.Result)
-                elif task.IsFaulted then
-                    tcs.SetException(task.Exception.InnerExceptions)
-                elif task.IsCanceled then
-                    tcs.SetCanceled()
-            task.ContinueWith(continuation, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default) |> ignore
-            tcs.Task
+    let startOnThreadPool (start: CancellationToken -> Task<'T>) cancellationToken =
+        Task.Run<'T>((fun () -> start cancellationToken), cancellationToken)
+        //match taskCreationOptions with
+        //| None -> task
+        //| Some options ->
+        //    let tcs = TaskCompletionSource<'T>(options)
+        //    let continuation (task: Task<'T>) =
+        //        if task.IsCompletedSuccessfully then
+        //            tcs.SetResult(task.Result)
+        //        elif task.IsFaulted then
+        //            tcs.SetException(task.Exception.InnerExceptions)
+        //        elif task.IsCanceled then
+        //            tcs.SetCanceled()
+        //    task.ContinueWith(continuation, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default) |> ignore
+        //    tcs.Task
 
     let awaitTaskWithCancellation (cancellationToken: CancellationToken) (task: Task<'T>) =
         __runtimeAsyncReturn (
@@ -130,227 +130,6 @@ module internal Async2RuntimeHelpers =
         )
         |> ignore
 
-module TasklikeHelpers =
-    type Awaiter<'Awaiter, 'TResult
-        when 'Awaiter :> ICriticalNotifyCompletion
-        and 'Awaiter: (member get_IsCompleted: unit -> bool)
-        and 'Awaiter: (member GetResult: unit -> 'TResult)> = 'Awaiter
-
-    type Awaitable<'Awaitable, 'Awaiter, 'TResult
-        when 'Awaitable: (member GetAwaiter: unit -> Awaiter<'Awaiter, 'TResult>)> = 'Awaitable
-
-    module Awaiter =
-        let inline getResult (awaiter: Awaiter<_, _>) = awaiter.GetResult()
-
-        let inline isCompleted (awaiter: Awaiter<_, _>) = awaiter.get_IsCompleted()
-
-    module Awaitable =
-        let inline getAwaiter (awaitable: Awaitable<_, _, _>) = awaitable.GetAwaiter()
-
-open TasklikeHelpers
-
-type [<Sealed; NoEquality; NoComparison; CompiledName("FSharpAsync2`1")>] Async2<'T>
-    (start: CancellationToken -> Task<'T>) =
-
-    member _.Start = start
-
-type Started<'T> = delegate of unit -> 'T
-type Cancellable<'T> = delegate of CancellationToken -> 'T
-
-module TasklikeSourceHelpers =
-    let inline startAwaitable (awaitable: Awaitable<_, _, _>) =
-        let awaiter = Awaitable.getAwaiter awaitable
-
-        Started(fun () ->
-            if not (Awaiter.isCompleted awaiter) then
-                AsyncHelpers.UnsafeAwaitAwaiter awaiter
-            Awaiter.getResult awaiter)
-
-    let inline startCancellableAwaitable
-        (cancellableAwaitable: CancellationToken -> Awaitable<_, _, _>)
-        =
-        Cancellable(fun ct ->
-            let awaiter =
-                cancellableAwaitable ct
-                |> Awaitable.getAwaiter
-
-            if not (Awaiter.isCompleted awaiter) then
-                AsyncHelpers.UnsafeAwaitAwaiter awaiter
-            Awaiter.getResult awaiter)
-
-open TasklikeSourceHelpers
-
-type CancellableRuntimeAsyncBuilder() =
-    member inline _.Delay
-        ([<InlineIfLambda>] generator: unit -> CancellationToken -> 'T)
-        : CancellationToken -> 'T =
-        fun ct ->
-            ct.ThrowIfCancellationRequested()
-            generator () ct
-
-    member inline _.Zero() : CancellationToken -> unit =
-        fun ct ->
-            ct.ThrowIfCancellationRequested()
-            ()
-
-    member inline _.Return(value: 'T) : CancellationToken -> 'T =
-        fun ct ->
-            ct.ThrowIfCancellationRequested()
-            value
-
-    member inline _.Combine
-        (
-            [<InlineIfLambda>] first: CancellationToken -> 'A,
-            [<InlineIfLambda>] second: CancellationToken -> 'T
-        ) : CancellationToken -> 'T =
-        fun ct ->
-            ct.ThrowIfCancellationRequested()
-            first ct |> ignore
-            second ct
-
-    member inline _.TryWith
-        (
-            [<InlineIfLambda>] body: CancellationToken -> 'T,
-            [<InlineIfLambda>] handler: exn -> CancellationToken -> 'T
-        ) : CancellationToken -> 'T =
-        fun ct ->
-            ct.ThrowIfCancellationRequested()
-
-            try
-                body ct
-            with
-            | :? OperationCanceledException -> reraise ()
-            | error -> handler error ct
-
-    member inline _.TryFinally
-        (
-            [<InlineIfLambda>] body: CancellationToken -> 'T,
-            [<InlineIfLambda>] compensation: unit -> unit
-        ) : CancellationToken -> 'T =
-        fun ct ->
-            try
-                ct.ThrowIfCancellationRequested()
-                body ct
-            finally
-                compensation ()
-
-    member inline _.Using
-        (resource: 'T, [<InlineIfLambda>] body: 'T -> CancellationToken -> 'U)
-        : CancellationToken -> 'U =
-        fun ct ->
-            try
-                ct.ThrowIfCancellationRequested()
-                body resource ct
-            finally
-                match box resource with
-                | null -> ()
-                | :? IAsyncDisposable as asyncDisposable ->
-                    AsyncHelpers.Await(asyncDisposable.DisposeAsync())
-                | :? IDisposable as disposable -> disposable.Dispose()
-                | _ -> ()
-
-    member inline _.While
-        (guard: unit -> bool, [<InlineIfLambda>] body: CancellationToken -> unit)
-        : CancellationToken -> unit =
-        fun ct ->
-            while guard () do
-                body ct
-
-            ct.ThrowIfCancellationRequested()
-
-    member inline _.For
-        (sequence: seq<'T>, [<InlineIfLambda>] body: 'T -> CancellationToken -> unit)
-        : CancellationToken -> unit =
-        fun ct ->
-            use enumerator = sequence.GetEnumerator()
-
-            while enumerator.MoveNext() do
-                body enumerator.Current ct
-
-            ct.ThrowIfCancellationRequested()
-
-    member inline _.Bind
-        (
-            [<InlineIfLambda>] await: Started<'T>,
-            [<InlineIfLambda>] continuation: 'T -> CancellationToken -> 'U
-        ) : CancellationToken -> 'U =
-        fun ct ->
-            ct.ThrowIfCancellationRequested()
-            continuation (await.Invoke()) ct
-
-    member inline _.Bind
-        (
-            [<InlineIfLambda>] await: Cancellable<'T>,
-            [<InlineIfLambda>] continuation: 'T -> CancellationToken -> 'U
-        ) : CancellationToken -> 'U =
-        fun ct ->
-            ct.ThrowIfCancellationRequested()
-            continuation (await.Invoke ct) ct
-
-    member inline _.MergeSources
-        ([<InlineIfLambda>] left: Started<'A>, [<InlineIfLambda>] right: Started<'B>)
-        =
-        let left = left.Invoke()
-        let right = right.Invoke()
-        Started(fun () -> struct (left, right))
-
-    member inline _.MergeSources
-        (
-            [<InlineIfLambda>] left: Cancellable<'A>,
-            [<InlineIfLambda>] right: Cancellable<'B>
-        ) =
-        Cancellable(fun ct ->
-            let rightTask = __runtimeAsyncReturnValueTask (right.Invoke ct)
-            let leftValue = left.Invoke ct
-            struct (leftValue, AsyncHelpers.Await rightTask))
-
-    member inline _.MergeSources
-        (
-            [<InlineIfLambda>] left: Started<'A>,
-            [<InlineIfLambda>] right: Cancellable<'B>
-        ) =
-        Cancellable(fun ct ->
-            let rightValue = right.Invoke ct
-            let leftValue = left.Invoke()
-            struct (leftValue, rightValue))
-
-    member inline _.MergeSources
-        (
-            [<InlineIfLambda>] left: Cancellable<'A>,
-            [<InlineIfLambda>] right: Started<'B>
-        ) =
-        Cancellable(fun ct ->
-            let leftValue = left.Invoke ct
-            let rightValue = right.Invoke()
-            struct (leftValue, rightValue))
-
-[<AutoOpen>]
-module CancellableRuntimeAsyncBuilderExtensions =
-    type CancellableRuntimeAsyncBuilder with
-        member inline this.For
-            (sequence: IAsyncEnumerable<'T>, [<InlineIfLambda>] body: 'T -> CancellationToken -> unit)
-            : CancellationToken -> unit =
-            fun ct ->
-                this.Using(
-                    sequence.GetAsyncEnumerator ct,
-                    fun enumerator ct ->
-                        while enumerator.MoveNextAsync() |> AsyncHelpers.Await do
-                            body enumerator.Current ct
-                ) ct
-
-        member inline _.Source(value: 'T) = value
-
-[<Sealed>]
-type Async2Builder() =
-    inherit CancellableRuntimeAsyncBuilder()
-
-    member inline _.Run([<InlineIfLambda>] code) : Async2<'T> =
-        Async2(fun ct -> __runtimeAsyncReturn (code ct))
-
-[<AutoOpen>]
-module Async2BuilderImpl =
-    let async2 = Async2Builder()
-
 [<Sealed; CompiledName("FSharpAsync2")>]
 type Async2 =
     static member DefaultCancellationToken =
@@ -394,14 +173,16 @@ type Async2 =
             ?cancellationToken: CancellationToken
         )
         =
+        ignore taskCreationOptions
         let token = Async2RuntimeHelpers.getToken cancellationToken
-        Async2RuntimeHelpers.startOnThreadPool computation.Start token taskCreationOptions
+        Async2RuntimeHelpers.startOnThreadPool computation.Start token
 
     static member StartChildAsTask
         (computation: Async2<'T>, ?taskCreationOptions: TaskCreationOptions)
         : Async2<Task<'T>> =
+        ignore taskCreationOptions
         Async2(fun ct -> 
-            let child = Async2RuntimeHelpers.startOnThreadPool computation.Start ct taskCreationOptions
+            let child = Async2RuntimeHelpers.startOnThreadPool computation.Start ct
             Task.FromResult child)
 
     static member Catch(computation: Async2<'T>) : Async2<Choice<'T, exn>> =
@@ -437,7 +218,7 @@ type Async2 =
             async2 {
                 let! ct = Async2.CancellationToken
                 return async2 {
-                    return! Async2RuntimeHelpers.startOnThreadPool computation.Start ct TaskCreationOptions.None
+                    return! Async2RuntimeHelpers.startOnThreadPool computation.Start ct
                 }
             }
 

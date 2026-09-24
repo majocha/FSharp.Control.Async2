@@ -2,7 +2,7 @@
   <PropertyGroup Condition="'$(MSBuildProjectExtension)' == '.fsproj'">
     <!-- Use the compiler and FSharp.Core produced by the local F# checkout. -->
     <RuntimeAsyncBin Condition="'$(RuntimeAsyncBin)' == '' and '$(RuntimeAsyncBitsPath)' != ''">$(RuntimeAsyncBitsPath)</RuntimeAsyncBin>
-    <RuntimeAsyncBin Condition="'$(RuntimeAsyncBin)' == ''">E:\repos\fsharp\artifacts\bin</RuntimeAsyncBin>
+    <RuntimeAsyncBin Condition="'$(RuntimeAsyncBin)' == ''">D:\repos\fsharp\artifacts\bin</RuntimeAsyncBin>
     <DisableImplicitFSharpCoreReference>true</DisableImplicitFSharpCoreReference>
     <DotnetFscCompilerPath>$(RuntimeAsyncBin)\fsc\Release\net11.0\fsc.dll</DotnetFscCompilerPath>
   </PropertyGroup>
