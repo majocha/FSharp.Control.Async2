@@ -31,21 +31,11 @@ module internal Async2RuntimeHelpers =
     let getToken token =
         defaultArg token (getDefaultCancellationToken ())
 
-    let startOnThreadPool (start: CancellationToken -> Task<'T>) cancellationToken =
-        Task.Run<'T>((fun () -> start cancellationToken), cancellationToken)
-        //match taskCreationOptions with
-        //| None -> task
-        //| Some options ->
-        //    let tcs = TaskCompletionSource<'T>(options)
-        //    let continuation (task: Task<'T>) =
-        //        if task.IsCompletedSuccessfully then
-        //            tcs.SetResult(task.Result)
-        //        elif task.IsFaulted then
-        //            tcs.SetException(task.Exception.InnerExceptions)
-        //        elif task.IsCanceled then
-        //            tcs.SetCanceled()
-        //    task.ContinueWith(continuation, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default) |> ignore
-        //    tcs.Task
+    let startOnThreadPool cancellationToken (computation: Async2<_>)  =
+        Task.Run<'T>((fun () -> computation.Start cancellationToken), cancellationToken)
+
+    let startImmediate cancellationToken (computation: Async2<_>) =
+        computation.Start cancellationToken
 
     let awaitTaskWithCancellation (cancellationToken: CancellationToken) (task: Task<'T>) =
         __runtimeAsyncReturn (
@@ -130,20 +120,25 @@ module internal Async2RuntimeHelpers =
         )
         |> ignore
 
+    let cancellationTokenAsync = Async2(fun ct -> __runtimeAsyncReturn ct)
+
+open Async2RuntimeHelpers
+
 [<Sealed; CompiledName("FSharpAsync2")>]
 type Async2 =
+
     static member DefaultCancellationToken =
-        Async2RuntimeHelpers.getDefaultCancellationToken ()
+        getDefaultCancellationToken ()
 
     static member CancelDefaultToken() =
-        Async2RuntimeHelpers.replaceDefaultCancellationToken ()
+        replaceDefaultCancellationToken ()
 
     static member CancellationToken : Async2<CancellationToken> =
         Async2(fun ct -> Task.FromResult ct)
 
     static member RunSynchronously(computation: Async2<'T>, ?timeout: int, ?cancellationToken: CancellationToken) =
         let timeout = defaultArg timeout Timeout.Infinite
-        let task = computation.Start(Async2RuntimeHelpers.getToken cancellationToken)
+        let task = computation.Start(getToken cancellationToken)
 
         if timeout <> Timeout.Infinite then
             try
@@ -157,13 +152,13 @@ type Async2 =
     static member RunSynchronouslyImmediate
         (computation: Async2<'T>, ?cancellationToken: CancellationToken)
         =
-        computation.Start(Async2RuntimeHelpers.getToken cancellationToken)
+        computation.Start(getToken cancellationToken)
             .GetAwaiter()
             .GetResult()
 
     static member Start(computation: Async2<unit>, ?cancellationToken: CancellationToken) =
-        let token = Async2RuntimeHelpers.getToken cancellationToken
-        Async2RuntimeHelpers.startOnThreadPool computation.Start token
+        let ct = getToken cancellationToken
+        computation |> startOnThreadPool ct
         |> ignore
 
     static member StartAsTask
@@ -174,16 +169,14 @@ type Async2 =
         )
         =
         ignore taskCreationOptions
-        let token = Async2RuntimeHelpers.getToken cancellationToken
-        Async2RuntimeHelpers.startOnThreadPool computation.Start token
+        let ct = getToken cancellationToken
+        computation |> startImmediate ct
 
-    static member StartChildAsTask
-        (computation: Async2<'T>, ?taskCreationOptions: TaskCreationOptions)
-        : Async2<Task<'T>> =
-        ignore taskCreationOptions
-        Async2(fun ct -> 
-            let child = Async2RuntimeHelpers.startOnThreadPool computation.Start ct
-            Task.FromResult child)
+    static member StartChildAsTask(computation, ?taskCreationOptions) =
+        async2 {
+            let! ct = cancellationTokenAsync
+            return computation |> startImmediate ct
+        }
 
     static member Catch(computation: Async2<'T>) : Async2<Choice<'T, exn>> =
         async2 {
@@ -200,7 +193,7 @@ type Async2 =
         Async2(fun ct ->
             let task = computation.Start ct
 
-            Async2RuntimeHelpers.continueWithResult task (fun completed ->
+            continueWithResult task (fun completed ->
                 if completed.IsCanceled then
                     compensation (OperationCanceledException ct)
 
@@ -218,7 +211,7 @@ type Async2 =
             async2 {
                 let! ct = Async2.CancellationToken
                 return async2 {
-                    return! Async2RuntimeHelpers.startOnThreadPool computation.Start ct
+                    return! computation |> startOnThreadPool ct
                 }
             }
 

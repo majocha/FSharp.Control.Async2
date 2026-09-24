@@ -91,7 +91,7 @@ type Async2Builder() =
 
     // The code type of the builder is `CancellationToken -> 'T`, i.e. the cancellation token is
     // passed along as state to every delayed continuation.
-    member inline _.Delay([<InlineIfLambda>] generator: unit -> Async2Code<'T>) : Async2Code<'T> =
+    member inline _.Delay([<InlineIfLambda>] generator) : Async2Code<'T> =
         fun ct ->
             ct.ThrowIfCancellationRequested()
             generator () ct
@@ -100,94 +100,60 @@ type Async2Builder() =
 
     member inline _.Return(value: 'T) : Async2Code<'T> = fun _ -> value
 
-    member inline _.Combine
-        (
-            [<InlineIfLambda>] first: Async2Code<'A>,
-            [<InlineIfLambda>] second: Async2Code<'T>
-        ) : Async2Code<'T> =
+    member inline _.Combine([<InlineIfLambda>] first, [<InlineIfLambda>] second) : Async2Code<'T> =
         fun ct ->
-            first ct
-            |> ignore
-
+            first ct |> ignore
             second ct
 
-    member inline _.TryWith
-        (
-            [<InlineIfLambda>] body: Async2Code<'T>,
-            [<InlineIfLambda>] handler: exn -> Async2Code<'T>
-        ) : Async2Code<'T> =
+    member inline _.TryWith ([<InlineIfLambda>] body, [<InlineIfLambda>] handler) : Async2Code<'T> =
         fun ct ->
             try
                 body ct
             with error ->
                 handler error ct
 
-    member inline _.TryFinally
-        (
-            [<InlineIfLambda>] body: Async2Code<'T>,
-            [<InlineIfLambda>] compensation: unit -> unit
-        ) : Async2Code<'T> =
+    member inline _.TryFinally ([<InlineIfLambda>] body, [<InlineIfLambda>] compensation) : Async2Code<'T> =
         fun ct ->
             try
                 body ct
             finally
                 compensation ()
 
-    member inline _.Using
-        (resource: 'T :> IDisposable | null, [<InlineIfLambda>] body: 'T -> Async2Code<'U>)
-        : Async2Code<'U> =
+    member inline _.Using(resource: 'T :> IDisposable | null, [<InlineIfLambda>] body) : Async2Code<'U> =
         fun ct ->
             try
                 body resource ct
             finally
                 if not (isNull (box resource)) then resource.Dispose()
 
-    member inline _.While
-        (guard: unit -> bool, [<InlineIfLambda>] body: Async2Code<unit>)
-        : Async2Code<unit> =
+    member inline _.While(guard: unit -> bool, [<InlineIfLambda>] body) : Async2Code<unit> =
         fun ct ->
             while guard () do
                 body ct
 
-    member inline _.For
-        (sequence: seq<'T>, [<InlineIfLambda>] body: 'T -> Async2Code<unit>)
-        : Async2Code<unit> =
+    member inline _.For(sequence: seq<'T>, [<InlineIfLambda>] body) : Async2Code<unit> =
         fun ct ->
             for item in sequence do
                 body item ct
 
-    member inline _.Bind
-        (
-            [<InlineIfLambda>] awaited: Started<'T>,
-            [<InlineIfLambda>] continuation: 'T -> Async2Code<'U>
-        ) : Async2Code<'U> =
+    member inline _.Bind([<InlineIfLambda>] awaited: Started<'T>,[<InlineIfLambda>] continuation) : Async2Code<'U> =
         fun ct -> continuation (awaited.Invoke()) ct
 
-    member inline this.Bind
-        (
-            [<InlineIfLambda>] cancellable: Cold<'T>,
-            [<InlineIfLambda>] continuation: 'T -> Async2Code<'U>
-        ) : Async2Code<'U> =
+    member inline this.Bind([<InlineIfLambda>] cancellable: Cold<'T>,[<InlineIfLambda>] continuation) : Async2Code<'U> =
         fun ct -> continuation (cancellable.Invoke ct) ct
 
     member inline _.ReturnFrom([<InlineIfLambda>] awaited: Started<'T>) : Async2Code<'T> =
         fun ct -> awaited.Invoke()
 
-    member inline _.ReturnFrom
-        ([<InlineIfLambda>] cancellable: Cold<'T>)
-        : Async2Code<'T> =
+    member inline _.ReturnFrom([<InlineIfLambda>] cancellable: Cold<'T>) : Async2Code<'T> =
         fun ct -> cancellable.Invoke ct
 
-    member inline _.MergeSources
-        ([<InlineIfLambda>] left: Started<'A>, [<InlineIfLambda>] right: Started<'B>)
-        =
+    member inline _.MergeSources([<InlineIfLambda>] left: Started<'A>, [<InlineIfLambda>] right: Started<'B>) =
         let left = left.Invoke()
         let right = right.Invoke()
         Started(fun () -> struct (left, right))
 
-    member inline this.MergeSources
-        ([<InlineIfLambda>] left: Cold<'A>, [<InlineIfLambda>] right: Cold<'B>)
-        =
+    member inline this.MergeSources([<InlineIfLambda>] left: Cold<'A>, [<InlineIfLambda>] right: Cold<'B>) =
         Cold(fun ct ->
             let right = __runtimeAsyncReturnValueTask (right.Invoke ct)
             let left = left.Invoke ct
@@ -197,18 +163,14 @@ type Async2Builder() =
                     |> AsyncHelpers.Await)
         )
 
-    member inline this.MergeSources
-        ([<InlineIfLambda>] left: Started<'A>, [<InlineIfLambda>] right: Cold<'B>)
-        =
+    member inline this.MergeSources ([<InlineIfLambda>] left: Started<'A>, [<InlineIfLambda>] right: Cold<'B>) =
         Cold(fun ct ->
             let right = right.Invoke ct
             let left = left.Invoke()
             struct (left, right)
         )
 
-    member inline this.MergeSources
-        ([<InlineIfLambda>] left: Cold<'A>, [<InlineIfLambda>] right: Started<'B>)
-        =
+    member inline this.MergeSources ([<InlineIfLambda>] left: Cold<'A>, [<InlineIfLambda>] right: Started<'B>) =
         Cold(fun ct ->
             let left = left.Invoke ct
             let right = right.Invoke()
@@ -224,9 +186,7 @@ type Async2Builder() =
 [<AutoOpen>]
 module Async2BuilderAsyncDisposableExtensions =
     type Async2Builder with
-        member inline _.Using
-            (resource: 'T :> IAsyncDisposable | null, [<InlineIfLambda>] body: 'T -> CancellationToken -> 'U)
-            : CancellationToken -> 'U =
+        member inline _.Using(resource: 'T :> IAsyncDisposable | null, [<InlineIfLambda>] body) : Async2Code<'U> =
             fun ct ->
                 try
                     body resource ct
@@ -234,9 +194,7 @@ module Async2BuilderAsyncDisposableExtensions =
                     if not (isNull (box resource)) then
                         resource.DisposeAsync() |> AsyncHelpers.Await
 
-        member inline this.For
-            (sequence: IAsyncEnumerable<'T>, [<InlineIfLambda>] body: 'T -> CancellationToken -> unit)
-            : CancellationToken -> unit =
+        member inline this.For(sequence: IAsyncEnumerable<'T>, [<InlineIfLambda>] body) : Async2Code<unit> =
             fun ct ->
                 this.Using
                     (sequence.GetAsyncEnumerator ct,
