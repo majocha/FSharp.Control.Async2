@@ -500,7 +500,7 @@ type AsyncType() =
         let t1 = Async2.StartAsTask a
         cts.Cancel()
         ewh.WaitOne(10000) |> ignore
-        t1.Wait()
+        t1
 
     [<Fact>]
     member _.CancellationExceptionThrown () =

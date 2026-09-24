@@ -32,33 +32,20 @@ module internal Async2RuntimeHelpers =
         defaultArg token (getDefaultCancellationToken ())
 
     let startOnThreadPool (start: CancellationToken -> Task<'T>) cancellationToken taskCreationOptions =
-        let task =
-            (Task.Factory.StartNew(
-                Func<Task<'T>>(fun () -> start cancellationToken),
-                CancellationToken.None,
-                taskCreationOptions,
-                TaskScheduler.Default
-            ))
-                .Unwrap()
-
-        let completion =
-            TaskCompletionSource<'T>(TaskCreationOptions.RunContinuationsAsynchronously)
-
-        task.ContinueWith(
-            Action<Task<'T>>(fun completed ->
-                if completed.IsCanceled then
-                    completion.TrySetCanceled() |> ignore
-                elif completed.IsFaulted then
-                    completion.TrySetException(completed.Exception) |> ignore
-                else
-                    completion.TrySetResult(completed.Result) |> ignore),
-            CancellationToken.None,
-            TaskContinuationOptions.ExecuteSynchronously,
-            TaskScheduler.Default
-        )
-        |> ignore
-
-        completion.Task
+        let task = Task.Run<'T>((fun () -> start cancellationToken), cancellationToken)
+        match taskCreationOptions with
+        | None -> task
+        | Some options ->
+            let tcs = TaskCompletionSource<'T>(options)
+            let continuation (task: Task<'T>) =
+                if task.IsCompletedSuccessfully then
+                    tcs.SetResult(task.Result)
+                elif task.IsFaulted then
+                    tcs.SetException(task.Exception.InnerExceptions)
+                elif task.IsCanceled then
+                    tcs.SetCanceled()
+            task.ContinueWith(continuation, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default) |> ignore
+            tcs.Task
 
     let awaitTaskWithCancellation (cancellationToken: CancellationToken) (task: Task<'T>) =
         __runtimeAsyncReturn (
@@ -165,9 +152,7 @@ open TasklikeHelpers
 type [<Sealed; NoEquality; NoComparison; CompiledName("FSharpAsync2`1")>] Async2<'T>
     (start: CancellationToken -> Task<'T>) =
 
-    /// Starts this computation with the supplied cancellation token.
-    member this.Start(cancellationToken: CancellationToken) =
-        start cancellationToken
+    member _.Start = start
 
 type Started<'T> = delegate of unit -> 'T
 type Cancellable<'T> = delegate of CancellationToken -> 'T
@@ -286,35 +271,21 @@ type CancellableRuntimeAsyncBuilder() =
 
     member inline _.Bind
         (
-            [<InlineIfLambda>] awaited: Started<'T>,
+            [<InlineIfLambda>] await: Started<'T>,
             [<InlineIfLambda>] continuation: 'T -> CancellationToken -> 'U
         ) : CancellationToken -> 'U =
         fun ct ->
             ct.ThrowIfCancellationRequested()
-            continuation (awaited.Invoke()) ct
+            continuation (await.Invoke()) ct
 
     member inline _.Bind
         (
-            [<InlineIfLambda>] cancellable: Cancellable<'T>,
+            [<InlineIfLambda>] await: Cancellable<'T>,
             [<InlineIfLambda>] continuation: 'T -> CancellationToken -> 'U
         ) : CancellationToken -> 'U =
         fun ct ->
             ct.ThrowIfCancellationRequested()
-            continuation (cancellable.Invoke ct) ct
-
-    member inline _.Bind
-        (
-            computation: Async2<'T>,
-            [<InlineIfLambda>] continuation: 'T -> CancellationToken -> 'U
-        ) : CancellationToken -> 'U =
-        fun ct ->
-            ct.ThrowIfCancellationRequested()
-            continuation (AsyncHelpers.Await(computation.Start ct)) ct
-
-    member inline _.ReturnFrom(computation: Async2<'T>) : CancellationToken -> 'T =
-        fun ct ->
-            ct.ThrowIfCancellationRequested()
-            AsyncHelpers.Await(computation.Start ct)
+            continuation (await.Invoke ct) ct
 
     member inline _.MergeSources
         ([<InlineIfLambda>] left: Started<'A>, [<InlineIfLambda>] right: Started<'B>)
@@ -413,7 +384,7 @@ type Async2 =
 
     static member Start(computation: Async2<unit>, ?cancellationToken: CancellationToken) =
         let token = Async2RuntimeHelpers.getToken cancellationToken
-        Async2RuntimeHelpers.startOnThreadPool (fun token -> computation.Start token) token TaskCreationOptions.DenyChildAttach
+        Async2RuntimeHelpers.startOnThreadPool computation.Start token
         |> ignore
 
     static member StartAsTask
@@ -424,19 +395,13 @@ type Async2 =
         )
         =
         let token = Async2RuntimeHelpers.getToken cancellationToken
-        let options = defaultArg taskCreationOptions TaskCreationOptions.DenyChildAttach
-        Async2RuntimeHelpers.startOnThreadPool (fun token -> computation.Start token) token options
+        Async2RuntimeHelpers.startOnThreadPool computation.Start token taskCreationOptions
 
     static member StartChildAsTask
         (computation: Async2<'T>, ?taskCreationOptions: TaskCreationOptions)
         : Async2<Task<'T>> =
-        Async2(fun ct ->
-            let child =
-                Async2RuntimeHelpers.startOnThreadPool
-                    (fun token -> computation.Start token)
-                    ct
-                    (defaultArg taskCreationOptions TaskCreationOptions.DenyChildAttach)
-
+        Async2(fun ct -> 
+            let child = Async2RuntimeHelpers.startOnThreadPool computation.Start ct taskCreationOptions
             Task.FromResult child)
 
     static member Catch(computation: Async2<'T>) : Async2<Choice<'T, exn>> =
@@ -469,38 +434,12 @@ type Async2 =
     static member StartChild
         (computation: Async2<'T>, ?millisecondsTimeout: int)
         : Async2<Async2<'T>> =
-        Async2(fun ct ->
-            ct.ThrowIfCancellationRequested()
-
-            let childCancellation =
-                CancellationTokenSource.CreateLinkedTokenSource(ct)
-
-            let childTask =
-                (Task.Factory.StartNew(
-                    Func<Task<'T>>(fun () -> computation.Start childCancellation.Token),
-                    CancellationToken.None,
-                    TaskCreationOptions.DenyChildAttach,
-                    TaskScheduler.Default
-                ))
-                    .Unwrap()
-            let child = Async2(fun _ -> childTask)
-
-            match millisecondsTimeout with
-            | None ->
-                childCancellation.Dispose()
-                Task.FromResult child
-            | Some timeout ->
-                __runtimeAsyncReturn (
-                    use timeoutTask = Task.Delay(timeout, ct)
-
-                    let winner =
-                        AsyncHelpers.Await(Task.WhenAny(childTask, timeoutTask))
-
-                    if obj.ReferenceEquals(winner, timeoutTask) then
-                        childCancellation.Cancel()
-                        raise (TimeoutException())
-
-                    child))
+            async2 {
+                let! ct = Async2.CancellationToken
+                return async2 {
+                    return! Async2RuntimeHelpers.startOnThreadPool computation.Start ct TaskCreationOptions.None
+                }
+            }
 
     static member Parallel(computations: seq<Async2<'T>>) : Async2<'T array> =
         Async2(fun ct ->
