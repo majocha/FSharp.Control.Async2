@@ -87,13 +87,18 @@ module Async2Builder =
         isNull SynchronizationContext.Current
         && obj.ReferenceEquals(TaskScheduler.Current, TaskScheduler.Default)
 
+    let inline check (cancellationToken: CancellationToken) =
+        cancellationToken.ThrowIfCancellationRequested()
+
+open Async2Builder
+
 type Async2Builder() =
 
     // The code type of the builder is `CancellationToken -> 'T`, i.e. the cancellation token is
     // passed along as state to every delayed continuation.
     member inline _.Delay([<InlineIfLambda>] generator) : Async2Code<'T> =
         fun ct ->
-            ct.ThrowIfCancellationRequested()
+            check ct
             generator () ct
 
     member inline _.Zero() : Async2Code<unit> = fun _ -> ()
@@ -129,6 +134,7 @@ type Async2Builder() =
     member inline _.While(guard: unit -> bool, [<InlineIfLambda>] body) : Async2Code<unit> =
         fun ct ->
             while guard () do
+                check ct
                 body ct
 
     member inline _.For(sequence: seq<'T>, [<InlineIfLambda>] body) : Async2Code<unit> =

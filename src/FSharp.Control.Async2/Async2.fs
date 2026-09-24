@@ -1,3 +1,4 @@
+
 // Copyright (c) Microsoft Corporation. All Rights Reserved.
 // Runtime-async adaptation for Async2.
 
@@ -33,69 +34,11 @@ module internal Async2RuntimeHelpers =
 
     let startOnThreadPool cancellationToken (computation: Async2<_>)  =
         Task.Run<'T>((fun () -> computation.Start cancellationToken), cancellationToken)
+        |> _.ContinueWith((fun (t: Task<_>) -> t.Result), cancellationToken)
 
     let startImmediate cancellationToken (computation: Async2<_>) =
         computation.Start cancellationToken
-
-    let awaitTaskWithCancellation (cancellationToken: CancellationToken) (task: Task<'T>) =
-        __runtimeAsyncReturn (
-            let cancellationTask =
-                Task.Delay(Timeout.Infinite, cancellationToken)
-
-            let winner =
-                AsyncHelpers.Await(Task.WhenAny(task, cancellationTask))
-
-            if obj.ReferenceEquals(winner, task) then
-                AsyncHelpers.Await task
-            else
-                cancellationToken.ThrowIfCancellationRequested()
-                Unchecked.defaultof<'T>
-        )
-
-    let awaitTaskUnitWithCancellation (cancellationToken: CancellationToken) (task: Task) =
-        __runtimeAsyncReturn (
-            let cancellationTask =
-                Task.Delay(Timeout.Infinite, cancellationToken)
-
-            let winner =
-                AsyncHelpers.Await(Task.WhenAny(task, cancellationTask))
-
-            if obj.ReferenceEquals(winner, task) then
-                AsyncHelpers.Await task
-            else
-                cancellationToken.ThrowIfCancellationRequested()
-        )
-
-    let awaitValueTaskWithCancellation (cancellationToken: CancellationToken) (task: ValueTask<'T>) =
-        __runtimeAsyncReturn (
-            let task = task.AsTask()
-            let cancellationTask =
-                Task.Delay(Timeout.Infinite, cancellationToken)
-
-            let winner =
-                AsyncHelpers.Await(Task.WhenAny(task, cancellationTask))
-
-            if obj.ReferenceEquals(winner, task) then
-                AsyncHelpers.Await task
-            else
-                cancellationToken.ThrowIfCancellationRequested()
-                Unchecked.defaultof<'T>
-        )
-
-    let awaitValueTaskUnitWithCancellation (cancellationToken: CancellationToken) (task: ValueTask) =
-        __runtimeAsyncReturn (
-            let task = task.AsTask()
-            let cancellationTask =
-                Task.Delay(Timeout.Infinite, cancellationToken)
-
-            let winner =
-                AsyncHelpers.Await(Task.WhenAny(task, cancellationTask))
-
-            if obj.ReferenceEquals(winner, task) then
-                AsyncHelpers.Await task
-            else
-                cancellationToken.ThrowIfCancellationRequested()
-        )
+        |> _.ContinueWith((fun (t: Task<_>) -> t.Result), cancellationToken)
 
     let continueWithResult (task: Task<'T>) (continuation: Task<'T> -> 'U) : Task<'U> =
         task.ContinueWith(
@@ -170,7 +113,8 @@ type Async2 =
         =
         ignore taskCreationOptions
         let ct = getToken cancellationToken
-        computation |> startImmediate ct
+        //computation |> startImmediate ct
+        computation |> startOnThreadPool ct
 
     static member StartChildAsTask(computation, ?taskCreationOptions) =
         async2 {
@@ -367,79 +311,62 @@ type Async2 =
 
                 AsyncHelpers.Await completion.Task))
 
-    static member AwaitTask(task: Task<'T>) : Async2<'T> =
-        Async2(fun ct -> Async2RuntimeHelpers.awaitTaskWithCancellation ct task)
+    static member AwaitTask(task: Task<'T>) : Async2<'T> = async2 { return! task }
 
-    static member AwaitTask(task: Task) : Async2<unit> =
-        Async2(fun ct -> Async2RuntimeHelpers.awaitTaskUnitWithCancellation ct task)
+    static member AwaitTask(task: Task) : Async2<unit> = async2 { return! task }
 
-    static member Await(task: Task<'T>) : Async2<'T> =
-        Async2.AwaitTask task
+    static member Await(task: Task<'T>) : Async2<'T> = async2 { return! task }
 
-    static member Await(task: Task) : Async2<unit> =
-        Async2.AwaitTask task
+    static member Await(task: Task) : Async2<unit> = async2 { return! task }
 
-    static member Await(task: ValueTask<'T>) : Async2<'T> =
-        Async2(fun ct -> Async2RuntimeHelpers.awaitValueTaskWithCancellation ct task)
+    static member Await(task: ValueTask<'T>) : Async2<'T> = async2 { return! task }
 
-    static member Await(task: ValueTask) : Async2<unit> =
-        Async2(fun ct -> Async2RuntimeHelpers.awaitValueTaskUnitWithCancellation ct task)
+    static member Await(task: ValueTask) : Async2<unit> = async2 { return! task }
 
     static member StartTaskImmediate(createTask: CancellationToken -> Task<'T>) : Async2<'T> =
-        Async2(fun ct ->
-            __runtimeAsyncReturn (
-                createTask ct
-                |> AsyncHelpers.Await))
+        async2 { let! ct = Async2.CancellationToken in return! createTask ct }
 
     static member StartTaskImmediate(createTask: CancellationToken -> Task) : Async2<unit> =
-        Async2(fun ct ->
-            __runtimeAsyncReturn (
-                createTask ct
-                |> AsyncHelpers.Await))
+        async2 { let! ct = Async2.CancellationToken in return! createTask ct }
 
     static member StartTaskImmediate(createTask: CancellationToken -> ValueTask<'T>) : Async2<'T> =
-        Async2(fun ct ->
-            __runtimeAsyncReturn (
-                createTask ct
-                |> AsyncHelpers.Await))
+        async2 { let! ct = Async2.CancellationToken in return! createTask ct }
 
     static member StartTaskImmediate(createTask: CancellationToken -> ValueTask) : Async2<unit> =
-        Async2(fun ct ->
-            __runtimeAsyncReturn (
-                createTask ct
-                |> AsyncHelpers.Await))
+        async2 { let! ct = Async2.CancellationToken in return! createTask ct }
 
     static member Sleep(millisecondsDueTime: int) : Async2<unit> =
-        Async2(fun ct ->
-            Async2RuntimeHelpers.awaitTaskUnitWithCancellation ct (Task.Delay(millisecondsDueTime, ct)))
+        async2 {
+            let! ct = Async2.CancellationToken
+            return! Task.Delay(millisecondsDueTime, ct)
+        }
 
     static member Sleep(dueTime: TimeSpan) : Async2<unit> =
-        Async2(fun ct ->
-            Async2RuntimeHelpers.awaitTaskUnitWithCancellation ct (Task.Delay(dueTime, ct)))
+        async2 {
+            let! ct = Async2.CancellationToken
+            return! Task.Delay(dueTime, ct)
+        }
 
     static member AwaitWaitHandle(waitHandle: WaitHandle, ?millisecondsTimeout: int) : Async2<bool> =
-        Async2(fun ct ->
-            let timeout = defaultArg millisecondsTimeout Timeout.Infinite
-            let completion = TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously)
-            let mutable registration = Unchecked.defaultof<RegisteredWaitHandle>
+        async2 {
+            let! ct = Async2.CancellationToken
 
-            registration <-
-                ThreadPool.RegisterWaitForSingleObject(
-                    waitHandle,
-                    WaitOrTimerCallback(fun _ timedOut -> completion.TrySetResult(not timedOut) |> ignore),
-                    null,
-                    timeout,
-                    true
-                )
+            let tcs =
+                TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously)
 
-            use cancellationRegistration =
-                ct.Register(
-                    Action(fun () ->
-                        completion.TrySetCanceled(ct) |> ignore
-                        registration.Unregister(null) |> ignore)
-                )
+            use _ = ct.Register(fun () -> tcs.TrySetCanceled() |> ignore)
 
-            Async2RuntimeHelpers.awaitTaskWithCancellation ct completion.Task)
+            let callback =
+                WaitOrTimerCallback(fun _ timedOut -> tcs.TrySetResult(not timedOut) |> ignore)
+
+            let handle =
+                ThreadPool.RegisterWaitForSingleObject(waitHandle, callback, null, defaultArg millisecondsTimeout Timeout.Infinite, true)
+            try
+                return! tcs.Task
+            finally
+                handle.Unregister null |> ignore
+        }
+
 
     static member AwaitIAsyncResult(iar: IAsyncResult, ?millisecondsTimeout: int) : Async2<bool> =
         Async2.AwaitWaitHandle(iar.AsyncWaitHandle, ?millisecondsTimeout = millisecondsTimeout)
@@ -450,28 +377,7 @@ type Async2 =
             endAction: IAsyncResult -> 'T,
             ?cancelAction: unit -> unit
         )
-        : Async2<'T> =
-        Async2(fun ct ->
-            __runtimeAsyncReturn (
-                let completion = TaskCompletionSource<IAsyncResult>(TaskCreationOptions.RunContinuationsAsynchronously)
-
-                let callback =
-                    AsyncCallback(fun result -> completion.TrySetResult(result) |> ignore)
-
-                let result = beginAction(callback, null)
-
-                if result.CompletedSynchronously then
-                    endAction result
-                else
-                    use registration =
-                        ct.Register(
-                            Action(fun () ->
-                                match cancelAction with
-                                | Some cancel -> cancel ()
-                                | None -> completion.TrySetCanceled(ct) |> ignore)
-                        )
-
-                    endAction (AsyncHelpers.Await completion.Task)))
+        : Async2<'T> = failwith "not implemented"
 
     static member AsBeginEnd(computation: 'Arg -> Async2<'T>) =
         let beginAction (arg: 'Arg, callback: AsyncCallback, state: obj) =
@@ -507,31 +413,25 @@ type Async2 =
             cancellationContinuation: OperationCanceledException -> unit,
             ?cancellationToken: CancellationToken
         ) =
-        let task = computation.Start(Async2RuntimeHelpers.getToken cancellationToken)
-
-        task.ContinueWith(
-            Action<Task<'T>>(fun completed ->
-                if completed.IsCanceled then
-                    cancellationContinuation (OperationCanceledException(Async2RuntimeHelpers.getToken cancellationToken))
-                elif completed.IsFaulted then
-                    exceptionContinuation completed.Exception.InnerException
-                else
-                    continuation completed.Result),
-            TaskScheduler.Default
-        )
-        |> ignore
+        async2 {
+            try
+                let! result = computation
+                continuation result
+            with
+            | :? OperationCanceledException as ex ->
+                cancellationContinuation ex
+            | ex ->
+                exceptionContinuation ex
+        }
+        |> startImmediate (getToken cancellationToken) |> ignore
 
     static member StartImmediate(computation: Async2<unit>, ?cancellationToken: CancellationToken) =
-        Async2.StartWithContinuations(
-            computation,
-            ignore,
-            (fun error -> raise error),
-            ignore,
-            ?cancellationToken = cancellationToken
-        )
+        let ct = getToken cancellationToken
+        computation |> startImmediate ct |> ignore
 
     static member StartImmediateAsTask(computation: Async2<'T>, ?cancellationToken: CancellationToken) =
-        computation.Start(Async2RuntimeHelpers.getToken cancellationToken)
+        let ct = getToken cancellationToken
+        computation |> startImmediate ct
 
 [<AutoOpen>]
 module Async2TaskLikeExtensions =
@@ -619,43 +519,41 @@ module CommonExtensions =
 
 [<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
 module Async2 =
-    let inline result (value: 'T) : Async2<'T> =
-        Async2(fun ct ->
-            ct.ThrowIfCancellationRequested()
-            Task.FromResult value)
+    let inline result (value: 'T) : Async2<'T> = async2 { return value }
 
     let inline map (mapping: 'T -> 'U) (computation: Async2<'T>) : Async2<'U> =
-        Async2(fun ct ->
-            __runtimeAsyncReturn (
-                mapping (AsyncHelpers.Await(computation.Start ct))))
+        async2 {
+            let! result = computation
+            return mapping result
+        }
 
     let inline bind (binder: 'T -> Async2<'U>) (computation: Async2<'T>) : Async2<'U> =
-        Async2(fun ct ->
-            __runtimeAsyncReturn (
-                AsyncHelpers.Await((binder (AsyncHelpers.Await(computation.Start ct))).Start ct)))
+        async2 {
+            let! result = computation
+            return! binder result
+        }
 
     let inline ignore<'T> (computation: Async2<'T>) : Async2<unit> =
         Async2.Ignore computation
 
     let catchWith (handler: exn -> 'T) (computation: Async2<'T>) : Async2<'T> =
-        Async2(fun ct ->
-            __runtimeAsyncReturn (
-                try
-                    AsyncHelpers.Await(computation.Start ct)
-                with
-                | :? OperationCanceledException -> reraise ()
-                | error ->
-                    handler error))
+        async2 {
+            try 
+                let! result = computation
+                return result
+            with error ->
+                return handler error
+        }
 
     let catch (computation: Async2<'T>) : Async2<Result<'T, exn>> =
-        Async2(fun ct ->
-            __runtimeAsyncReturn (
-                try
-                    Ok (AsyncHelpers.Await(computation.Start ct))
-                with
-                | :? OperationCanceledException -> reraise ()
-                | error ->
-                    Error error))
+        async2 {
+            try
+                let! result = computation
+                return Ok result
+            with
+            | error when not (error :? OperationCanceledException) ->
+                return Error error
+        }
 
     let empty : Async2<unit> =
         async2 { return () }
