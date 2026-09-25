@@ -76,7 +76,7 @@ module internal Async2RuntimeHelpers =
     let startImmediate cancellationToken (computation: Async2<_>) =
         computation.StartInIsolatedTrampoline cancellationToken
 
-    let cancellationTokenAsync = Async2(fun ct -> __runtimeAsyncReturnValueTask ct)
+    let cancellationTokenAsync = Async2(fun ct -> ValueTask<CancellationToken>(ct))
 
 open Async2RuntimeHelpers
 open System.Runtime.ExceptionServices
@@ -247,41 +247,43 @@ type Async2 =
         }
 
     static member Choice(computations: seq<Async2<'T option>>) : Async2<'T option> =
-        Async2(fun ct ->
-            __runtimeAsyncReturnValueTask (
-                let tasks = computations |> Seq.map (fun computation -> computation.Start ct) |> Seq.toArray
-                let remaining = ResizeArray<Task<'T option>>(tasks)
-                let mutable result = None
-                let mutable found = false
+        async2 {
+            let! ct = Async2.CancellationToken
+            let tasks = computations |> Seq.map (fun computation -> computation.Start ct) |> Seq.toArray
+            let remaining = ResizeArray<Task<'T option>>(tasks)
+            let mutable result = None
+            let mutable found = false
 
-                while not found && remaining.Count > 0 do
-                    let completed = AsyncHelpers.Await(Task.WhenAny(remaining))
-                    remaining.Remove completed |> ignore
+            while not found && remaining.Count > 0 do
+                let! completed = Task.WhenAny(remaining)
+                remaining.Remove completed |> ignore
 
-                    match AsyncHelpers.Await completed with
-                    | Some value ->
-                        result <- Some value
-                        found <- true
-                    | None -> ()
+                match! completed with
+                | Some value ->
+                    result <- Some value
+                    found <- true
+                | None -> ()
 
-                result))
+            return result
+        }
 
     static member SwitchToNewThread() : Async2<unit> =
-        Async2(fun ct ->
-            __runtimeAsyncReturnValueTask (
+        async2 {
+            let! ct = Async2.CancellationToken
+            do!
                 Task.Factory.StartNew(
                     Action(fun () -> ()),
                     ct,
                     TaskCreationOptions.LongRunning,
                     TaskScheduler.Default
                 )
-                |> AsyncHelpers.Await))
+        }
 
     static member SwitchToThreadPool() : Async2<unit> =
-        Async2(fun ct ->
-            __runtimeAsyncReturnValueTask (
-                Task.Run(Action(fun () -> ()), ct)
-                |> AsyncHelpers.Await))
+        async2 {
+            let! ct = Async2.CancellationToken
+            do! Task.Run(Action(fun () -> ()), ct)
+        }
 
     static member SwitchToContext(syncContext: SynchronizationContext | null) : Async2<unit> =
         Async2(fun ct ->
@@ -307,41 +309,42 @@ type Async2 =
     static member FromContinuations
         (callback: ('T -> unit) * (exn -> unit) * (OperationCanceledException -> unit) -> unit)
         : Async2<'T> =
-        Async2(fun ct ->
-            __runtimeAsyncReturnValueTask (
-                let completion = TaskCompletionSource<'T>(TaskCreationOptions.RunContinuationsAsynchronously)
-                let mutable completed = 0
+        async2 {
+            let! ct = Async2.CancellationToken
+            let completion = TaskCompletionSource<'T>(TaskCreationOptions.RunContinuationsAsynchronously)
+            let mutable completed = 0
 
-                let once action value =
-                    if Interlocked.CompareExchange(&completed, 1, 0) = 0 then
-                        action value |> ignore
+            let once action value =
+                if Interlocked.CompareExchange(&completed, 1, 0) = 0 then
+                    action value |> ignore
 
-                use registration =
-                    ct.Register(
-                        Action(fun () ->
-                            once
-                                (fun (error: OperationCanceledException) ->
-                                    completion.TrySetCanceled(error.CancellationToken) |> ignore)
-                                (OperationCanceledException ct))
-                    )
-
-                callback(
-                    (fun value ->
-                        once
-                            (fun (value: 'T) -> completion.TrySetResult(value) |> ignore)
-                            value),
-                    (fun error ->
-                        once
-                            (fun (error: exn) -> completion.TrySetException(error) |> ignore)
-                            error),
-                    (fun error ->
+            use registration =
+                ct.Register(
+                    Action(fun () ->
                         once
                             (fun (error: OperationCanceledException) ->
                                 completion.TrySetCanceled(error.CancellationToken) |> ignore)
-                            error)
+                            (OperationCanceledException ct))
                 )
 
-                AsyncHelpers.Await completion.Task))
+            callback(
+                (fun value ->
+                    once
+                        (fun (value: 'T) -> completion.TrySetResult(value) |> ignore)
+                        value),
+                (fun error ->
+                    once
+                        (fun (error: exn) -> completion.TrySetException(error) |> ignore)
+                        error),
+                (fun error ->
+                    once
+                        (fun (error: OperationCanceledException) ->
+                            completion.TrySetCanceled(error.CancellationToken) |> ignore)
+                        error)
+            )
+
+            return! completion.Task
+        }
 
     static member AwaitTask(task: Task<'T>) : Async2<'T> =
         Async2(fun _ -> ValueTask<'T>(task))
