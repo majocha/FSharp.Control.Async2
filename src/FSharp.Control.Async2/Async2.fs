@@ -20,19 +20,41 @@ open Microsoft.FSharp.Core.CompilerServices.StateMachineHelpers
 open Microsoft.FSharp.Collections
 
 module internal Async2RuntimeHelpers =
-    type ValueTaskCompletionSource<'T>() =
+    type ValueTaskCompletionSource<'T>() as this =
         let source = ManualResetValueTaskSourceCore<'T>(RunContinuationsAsynchronously = true)
+        let mutable completed = 0
+        let mutable canceled = 0
+        let mutable cancellationRegistration = Unchecked.defaultof<CancellationTokenRegistration>
+
         interface IValueTaskSource<'T> with
             member _.GetResult token = source.GetResult token
-            member _.GetStatus token = source.GetStatus token
+            member _.GetStatus token =
+                let status = source.GetStatus token
+                if status = ValueTaskSourceStatus.Faulted && Volatile.Read(&canceled) <> 0 then
+                    ValueTaskSourceStatus.Canceled
+                else
+                    status
             member _.OnCompleted(continuation, state, token, flags) = source.OnCompleted(continuation, state, token, flags)
-    
-        member _.SetResult(value: 'T) = source.SetResult value
-        member _.SetException(ex: exn) = source.SetException ex
 
-        member this.Await (ct: CancellationToken) =
-            ct.Register(Action(fun () -> source.SetException(OperationCanceledException(ct)))) |> ignore
+        member _.TrySetResult(value: 'T) =
+            if Interlocked.CompareExchange(&completed, 1, 0) = 0 then
+                source.SetResult value
+
+        member _.TrySetException(ex: exn) =
+            if Interlocked.CompareExchange(&completed, 1, 0) = 0 then
+                if ex :? OperationCanceledException then
+                    Volatile.Write(&canceled, 1)
+                source.SetException ex
+
+        member _.Await(ct: CancellationToken) =
+            cancellationRegistration <-
+                ct.Register(
+                    Action(fun () ->
+                        this.TrySetException(TaskCanceledException("The task was canceled.", null, ct)))
+                )
             ValueTask<'T>(this, source.Version)
+
+        member _.Dispose() = cancellationRegistration.Dispose()
 
     let defaultCancellationTokenSource = ref (new CancellationTokenSource())
 
@@ -48,13 +70,12 @@ module internal Async2RuntimeHelpers =
     let getToken token =
         defaultArg token (getDefaultCancellationToken ())
 
-    let startOnThreadPool cancellationToken (computation: Async2<_>)  =
-        Task.Run<'T>((fun () -> computation.Start cancellationToken), cancellationToken)
-        |> _.ContinueWith((fun (t: Task<_>) -> t.Result), cancellationToken)
+    let startOnThreadPool cancellationToken (computation: Async2<_>) =
+        Task.Run<'T>(fun () -> computation.Start cancellationToken)
 
     let startImmediate cancellationToken (computation: Async2<_>) =
         computation.Start cancellationToken
-        |> _.ContinueWith((fun (t: Task<_>) -> t.Result), cancellationToken)
+        //|> _.ContinueWith((fun (t: Task<_>) -> t.Result), cancellationToken)
 
     let cancellationTokenAsync = Async2(fun ct -> __runtimeAsyncReturnValueTask ct)
 
@@ -161,30 +182,35 @@ type Async2 =
             let! ct = Async2.CancellationToken
             let cts = CancellationTokenSource.CreateLinkedTokenSource ct
             let mutable edi = None
+            let mutable index = 0
+            let tasks = ResizeArray()
 
-            for index, computation in computations |> Seq.indexed do
+            while index < computations.Length && not cts.IsCancellationRequested do
                 do! semaphore.WaitAsync()
-                Async2.Start(async2 {
+                let currentIndex = index
+                let computation = computations[currentIndex]
+                let worker = async2 {
                     try
                         try 
                             let! result = computation
-                            results[index] <- result
+                            results[currentIndex] <- result
                         with
-                        | :? OperationCanceledException as ex when ex.CancellationToken = cts.Token ->
-                            ()
                         | exn when not cts.IsCancellationRequested ->
                             edi <- ExceptionDispatchInfo.Capture exn |> Some
                             cts.Cancel()
                         | _ -> ()
                     finally
                         semaphore.Release() |> ignore
-                }, cts.Token)
-                edi |> Option.iter _.Throw()
+                }
+                tasks.Add(Task.Run<unit>(fun () -> worker.Start cts.Token))
+                index <- index + 1
 
-            // wait for all tasks to complete
-            for i in 1 .. maxDegreeOfParallelism do
-                do! semaphore.WaitAsync()
-                edi |> Option.iter _.Throw()
+            try
+                let! all = Task.WhenAll(tasks)
+                ignore all
+            with _ -> ()
+
+            edi |> Option.iter _.Throw()
 
             return results
         }
@@ -337,17 +363,18 @@ type Async2 =
         async2 {
             let! ct = Async2.CancellationToken
 
-            let tcs = ValueTaskCompletionSource()
+            let tcs = ValueTaskCompletionSource<bool>()
 
             let callback =
-                WaitOrTimerCallback(fun _ timedOut -> tcs.SetResult(not timedOut) |> ignore)
+                WaitOrTimerCallback(fun _ timedOut -> tcs.TrySetResult(not timedOut))
 
             let handle =
                 ThreadPool.RegisterWaitForSingleObject(waitHandle, callback, null, defaultArg millisecondsTimeout Timeout.Infinite, true)
             try
-                return! tcs.Await
+                return! tcs.Await ct
             finally
                 handle.Unregister null |> ignore
+                tcs.Dispose()
         }
 
 
