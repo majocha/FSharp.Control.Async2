@@ -95,8 +95,9 @@ type Async2 =
 
     static member RunSynchronously(computation: Async2<'T>, ?timeout: int, ?cancellationToken: CancellationToken) =
         let timeout = defaultArg timeout Timeout.Infinite
-        let ct = getToken cancellationToken
-        let task =
+        let cancellationToken = getToken cancellationToken
+
+        let start ct =
             if
                 timeout = Timeout.Infinite
                 && Thread.CurrentThread.IsThreadPoolThread
@@ -106,14 +107,18 @@ type Async2 =
             else
                 computation |> startOnThreadPool ct
 
-        if timeout <> Timeout.Infinite then
-            try
-                if not (task.Wait timeout) then
-                    raise (TimeoutException())
-            with
-            | :? AggregateException -> ()
+        match timeout with
+        | Timeout.Infinite ->
+            cancellationToken |> start |> _.GetAwaiter().GetResult()
+        | timeout ->
+            let cts = CancellationTokenSource.CreateLinkedTokenSource cancellationToken
+            let task = start cts.Token         
+            if not (task.Wait timeout) then
+                cts.Cancel()
+                raise (TimeoutException())
+            else
+                task.GetAwaiter().GetResult()
 
-        task.GetAwaiter().GetResult()
 
     static member RunSynchronouslyImmediate
         (computation: Async2<'T>, ?cancellationToken: CancellationToken)
