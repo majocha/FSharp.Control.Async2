@@ -5,8 +5,6 @@
 namespace Microsoft.FSharp.Control
 
 open System
-open System.Collections.Generic
-open System.Diagnostics
 open System.IO
 open System.Net
 open System.Runtime.CompilerServices
@@ -17,7 +15,6 @@ open System.Threading.Tasks.Sources
 open Microsoft.FSharp.Core
 open Microsoft.FSharp.Core.CompilerServices
 open Microsoft.FSharp.Core.CompilerServices.StateMachineHelpers
-open Microsoft.FSharp.Collections
 
 module internal Async2RuntimeHelpers =
     type ValueTaskCompletionSource<'T>() as this =
@@ -93,7 +90,10 @@ type Async2 =
     static member CancellationToken = cancellationTokenAsync
 
     static member RunSynchronously(computation: Async2<'T>, ?timeout: int, ?cancellationToken: CancellationToken) =
-        let timeout = defaultArg timeout Timeout.Infinite
+        let timeout =
+            match cancellationToken with
+            | Some token when token.CanBeCanceled -> Timeout.Infinite
+            | _ -> defaultArg timeout Timeout.Infinite
         let cancellationToken = getToken cancellationToken
 
         let start ct =
@@ -110,13 +110,23 @@ type Async2 =
         | Timeout.Infinite ->
             cancellationToken |> start |> _.GetAwaiter().GetResult()
         | timeout ->
-            let cts = CancellationTokenSource.CreateLinkedTokenSource cancellationToken
-            let task = start cts.Token         
-            if not (task.Wait timeout) then
-                cts.Cancel()
-                raise (TimeoutException())
-            else
+            use cts = CancellationTokenSource.CreateLinkedTokenSource cancellationToken
+            let task = start cts.Token
+            let completed =
+                try
+                    task.Wait timeout
+                with :? AggregateException ->
+                    true
+
+            if completed then
                 task.GetAwaiter().GetResult()
+            else
+                cts.Cancel()
+                // A timed-out computation must finish unwinding before its linked token is disposed.
+                try
+                    task.Wait()
+                with :? AggregateException -> ()
+                raise (TimeoutException())
 
 
     static member RunSynchronouslyImmediate
@@ -191,47 +201,43 @@ type Async2 =
         (computations: seq<Async2<'T>>, ?maxDegreeOfParallelism: int)
         : Async2<'T array> =
         let computations = computations |> Seq.toArray
-        let results = Array.zeroCreate<'T> computations.Length
-        let maxDegreeOfParallelism = defaultArg maxDegreeOfParallelism computations.Length
+        let maxDegreeOfParallelism = defaultArg maxDegreeOfParallelism (max 1 computations.Length)
 
         if maxDegreeOfParallelism < 1 then
             invalidArg "maxDegreeOfParallelism" (sprintf "maxDegreeOfParallelism must be positive, was %d" maxDegreeOfParallelism)
 
         async2 {
-            use semaphore = new SemaphoreSlim(maxDegreeOfParallelism, maxDegreeOfParallelism)
             let! ct = Async2.CancellationToken
-            let cts = CancellationTokenSource.CreateLinkedTokenSource ct
-            let mutable edi = None
-            let mutable index = 0
-            let tasks = ResizeArray()
-
-            while index < computations.Length && not cts.IsCancellationRequested do
-                do! semaphore.WaitAsync()
-                let currentIndex = index
-                let computation = computations[currentIndex]
-                let worker = async2 {
-                    try
+            use cts = CancellationTokenSource.CreateLinkedTokenSource ct
+            let innerToken = cts.Token
+            let mutable firstFailure : ExceptionDispatchInfo option = None
+            let mutable index = -1
+            let workerCount = min computations.Length maxDegreeOfParallelism
+            let results = Array.zeroCreate<'T> computations.Length
+            let workers =
+                Array.init workerCount (fun _ ->
+                    let worker = async2 {
                         try 
-                            let! result = computation
-                            results[currentIndex] <- result
+                            while index < computations.Length && not innerToken.IsCancellationRequested do
+                                let currentIndex = Interlocked.Increment(&index)
+                                if currentIndex < computations.Length then
+                                    let computation = computations[currentIndex]
+                                    let! result = computation
+                                    results[currentIndex] <- result
                         with
-                        | exn when not cts.IsCancellationRequested ->
-                            edi <- ExceptionDispatchInfo.Capture exn |> Some
-                            cts.Cancel()
+                        | exn when not innerToken.IsCancellationRequested ->
+                            let failure = ExceptionDispatchInfo.Capture exn
+                            if Interlocked.CompareExchange(&firstFailure, Some failure, None).IsNone then
+                                cts.Cancel()
                         | _ -> ()
-                    finally
-                        semaphore.Release() |> ignore
-                }
-                tasks.Add(Task.Run<unit>(fun () -> worker.Start cts.Token))
-                index <- index + 1
+                    }
+                    Task.Run<unit>(fun () -> worker.Start innerToken))
 
             try
-                let! all = Task.WhenAll(tasks)
-                ignore all
+                let! completed = Task.WhenAll workers
+                ignore completed
             with _ -> ()
-
-            edi |> Option.iter _.Throw()
-
+            firstFailure |> Option.iter _.Throw()
             return results
         }
 
@@ -247,23 +253,34 @@ type Async2 =
         }
 
     static member Choice(computations: seq<Async2<'T option>>) : Async2<'T option> =
+        let computations = computations |> Seq.toArray
         async2 {
             let! ct = Async2.CancellationToken
-            let tasks = computations |> Seq.map (fun computation -> computation.Start ct) |> Seq.toArray
-            let remaining = ResizeArray<Task<'T option>>(tasks)
+            use cts = CancellationTokenSource.CreateLinkedTokenSource ct
             let mutable result = None
             let mutable found = false
 
-            while not found && remaining.Count > 0 do
-                let! completed = Task.WhenAny(remaining)
-                remaining.Remove completed |> ignore
+            let worker computation =
+                async2 {
+                    if not found then
+                        try
+                            match! computation with
+                            | Some value ->
+                                result <- Some value
+                                found <- true
+                                cts.Cancel()
+                            | None -> ()
+                        with _ -> ()
+                }
+                |> startOnThreadPool cts.Token
 
-                match! completed with
-                | Some value ->
-                    result <- Some value
-                    found <- true
-                | None -> ()
+            let workers = computations |> Array.map worker
 
+            try
+                let! rejoin = Task.WhenAll(workers)
+                ignore rejoin
+            with _ -> ()
+            
             return result
         }
 

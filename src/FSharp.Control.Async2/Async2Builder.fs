@@ -5,10 +5,7 @@ open System.Runtime.CompilerServices
 open System.Threading
 open System.Threading.Tasks
 open System.Collections.Generic
-open Microsoft.FSharp.Core
 open Microsoft.FSharp.Core.CompilerServices
-open Microsoft.FSharp.Core.LanguagePrimitives.IntrinsicOperators
-open Microsoft.FSharp.Collections
 
 module AwaitableHelpers =
 
