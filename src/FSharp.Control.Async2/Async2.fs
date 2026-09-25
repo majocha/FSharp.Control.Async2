@@ -12,12 +12,28 @@ open System.Net
 open System.Runtime.CompilerServices
 open System.Threading
 open System.Threading.Tasks
+open System.Threading.Tasks.Sources
+
 open Microsoft.FSharp.Core
 open Microsoft.FSharp.Core.CompilerServices
 open Microsoft.FSharp.Core.CompilerServices.StateMachineHelpers
 open Microsoft.FSharp.Collections
 
 module internal Async2RuntimeHelpers =
+    type ValueTaskCompletionSource<'T>() =
+        let source = ManualResetValueTaskSourceCore<'T>(RunContinuationsAsynchronously = true)
+        interface IValueTaskSource<'T> with
+            member _.GetResult token = source.GetResult token
+            member _.GetStatus token = source.GetStatus token
+            member _.OnCompleted(continuation, state, token, flags) = source.OnCompleted(continuation, state, token, flags)
+    
+        member _.SetResult(value: 'T) = source.SetResult value
+        member _.SetException(ex: exn) = source.SetException ex
+
+        member this.Await (ct: CancellationToken) =
+            ct.Register(Action(fun () -> source.SetException(OperationCanceledException(ct)))) |> ignore
+            ValueTask<'T>(this, source.Version)
+
     let defaultCancellationTokenSource = ref (new CancellationTokenSource())
 
     let getDefaultCancellationToken () =
@@ -63,7 +79,7 @@ module internal Async2RuntimeHelpers =
         )
         |> ignore
 
-    let cancellationTokenAsync = Async2(fun ct -> __runtimeAsyncReturn ct)
+    let cancellationTokenAsync = Async2(fun ct -> __runtimeAsyncReturnValueTask ct)
 
 open Async2RuntimeHelpers
 open System.Runtime.ExceptionServices
@@ -77,21 +93,13 @@ type Async2 =
     static member CancelDefaultToken() =
         replaceDefaultCancellationToken ()
 
-    static member CancellationToken : Async2<CancellationToken> =
-        Async2(fun ct -> Task.FromResult ct)
+    static member CancellationToken = cancellationTokenAsync
 
     static member RunSynchronously(computation: Async2<'T>, ?timeout: int, ?cancellationToken: CancellationToken) =
         let timeout = defaultArg timeout Timeout.Infinite
-        let task = computation.Start(getToken cancellationToken)
-
-        if timeout <> Timeout.Infinite then
-            try
-                if not (task.Wait timeout) then
-                    raise (TimeoutException())
-            with :? AggregateException ->
-                ()
-
-        task.GetAwaiter().GetResult()
+        let ct = getToken cancellationToken
+        ignore timeout
+        computation |> startOnThreadPool ct |> _.GetAwaiter().GetResult()
 
     static member RunSynchronouslyImmediate
         (computation: Async2<'T>, ?cancellationToken: CancellationToken)
@@ -135,14 +143,15 @@ type Async2 =
     static member TryCancelled
         (computation: Async2<'T>, compensation: OperationCanceledException -> unit)
         : Async2<'T> =
-        Async2(fun ct ->
-            let task = computation.Start ct
-
-            continueWithResult task (fun completed ->
-                if completed.IsCanceled then
-                    compensation (OperationCanceledException ct)
-
-                completed.GetAwaiter().GetResult()))
+        async2 {
+            let! ct = Async2.CancellationToken
+            try
+                return! computation
+            with
+            | :? OperationCanceledException as ex when ex.CancellationToken = ct ->
+                compensation ex
+                return Unchecked.defaultof<'T>
+        }
 
     static member OnCancel(interruption: unit -> unit) : Async2<IDisposable> =
         async2 {
@@ -160,23 +169,6 @@ type Async2 =
                 }
             }
 
-    static member Parallel(computations: seq<Async2<'T>>) : Async2<'T array> =
-        Async2(fun ct ->
-            __runtimeAsyncReturn (
-                ct.ThrowIfCancellationRequested()
-                let linked = CancellationTokenSource.CreateLinkedTokenSource ct
-
-                try
-                    let tasks =
-                        computations
-                        |> Seq.map (fun computation -> computation.Start linked.Token)
-                        |> Seq.toArray
-
-                    tasks |> Array.iter (Async2RuntimeHelpers.cancelOnFault linked)
-                    AsyncHelpers.Await<'T array>(Task.WhenAll tasks)
-                finally
-                    linked.Dispose()))
-
     static member Parallel
         (computations: seq<Async2<'T>>, ?maxDegreeOfParallelism: int)
         : Async2<'T array> =
@@ -189,49 +181,51 @@ type Async2 =
 
         async2 {
             use semaphore = new SemaphoreSlim(maxDegreeOfParallelism, maxDegreeOfParallelism)
-            use cts = new CancellationTokenSource()
+            let! ct = Async2.CancellationToken
+            let cts = CancellationTokenSource.CreateLinkedTokenSource ct
             let mutable edi = None
-            for i, computation in computations |> Seq.indexed do
+
+            for index, computation in computations |> Seq.indexed do
                 do! semaphore.WaitAsync()
-                let single = 
-                    async2 {
+                Async2.Start(async2 {
+                    try
                         try 
-                            try 
-                                let! result = computation
-                                results[i] <- result
-                            with
-                            | :? OperationCanceledException as ex -> ()
-                            | error ->
-                                if cts.IsCancellationRequested then
-                                    ()
-                                else
-                                    edi <- ExceptionDispatchInfo.Capture error |> Some
-                                    cts.Cancel()
-                        finally
-                            semaphore.Release() |> ignore }
-                Async2.Start(single, cts.Token)
+                            let! result = computation
+                            results[index] <- result
+                        with
+                        | :? OperationCanceledException as ex when ex.CancellationToken = cts.Token ->
+                            ()
+                        | exn when not cts.IsCancellationRequested ->
+                            edi <- ExceptionDispatchInfo.Capture exn |> Some
+                            cts.Cancel()
+                        | _ -> ()
+                    finally
+                        semaphore.Release() |> ignore
+                }, cts.Token)
                 edi |> Option.iter _.Throw()
 
             // wait for all tasks to complete
             for i in 1 .. maxDegreeOfParallelism do
                 do! semaphore.WaitAsync()
+                edi |> Option.iter _.Throw()
 
             return results
         }
 
     static member Sequential(computations: seq<Async2<'T>>) : Async2<'T array> =
-        Async2(fun ct ->
-            __runtimeAsyncReturn (
-                let results = ResizeArray<'T>()
+        async2 {
+            let results = ResizeArray()
 
-                for computation in computations do
-                    results.Add(AsyncHelpers.Await(computation.Start ct))
+            for c in computations do
+                let! r = c
+                results.Add r
 
-                results.ToArray()))
+            return results.ToArray()
+        }
 
     static member Choice(computations: seq<Async2<'T option>>) : Async2<'T option> =
         Async2(fun ct ->
-            __runtimeAsyncReturn (
+            __runtimeAsyncReturnValueTask (
                 let tasks = computations |> Seq.map (fun computation -> computation.Start ct) |> Seq.toArray
                 let remaining = ResizeArray<Task<'T option>>(tasks)
                 let mutable result = None
@@ -251,7 +245,7 @@ type Async2 =
 
     static member SwitchToNewThread() : Async2<unit> =
         Async2(fun ct ->
-            __runtimeAsyncReturn (
+            __runtimeAsyncReturnValueTask (
                 Task.Factory.StartNew(
                     Action(fun () -> ()),
                     ct,
@@ -262,7 +256,7 @@ type Async2 =
 
     static member SwitchToThreadPool() : Async2<unit> =
         Async2(fun ct ->
-            __runtimeAsyncReturn (
+            __runtimeAsyncReturnValueTask (
                 Task.Run(Action(fun () -> ()), ct)
                 |> AsyncHelpers.Await))
 
@@ -285,13 +279,13 @@ type Async2 =
                     null
                 )
 
-            completion.Task)
+            completion.Task |> ValueTask.ofTask)
 
     static member FromContinuations
         (callback: ('T -> unit) * (exn -> unit) * (OperationCanceledException -> unit) -> unit)
         : Async2<'T> =
         Async2(fun ct ->
-            __runtimeAsyncReturn (
+            __runtimeAsyncReturnValueTask (
                 let completion = TaskCompletionSource<'T>(TaskCreationOptions.RunContinuationsAsynchronously)
                 let mutable completed = 0
 
@@ -366,18 +360,15 @@ type Async2 =
         async2 {
             let! ct = Async2.CancellationToken
 
-            let tcs =
-                TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously)
-
-            use _ = ct.Register(fun () -> tcs.TrySetCanceled() |> ignore)
+            let tcs = ValueTaskCompletionSource()
 
             let callback =
-                WaitOrTimerCallback(fun _ timedOut -> tcs.TrySetResult(not timedOut) |> ignore)
+                WaitOrTimerCallback(fun _ timedOut -> tcs.SetResult(not timedOut) |> ignore)
 
             let handle =
                 ThreadPool.RegisterWaitForSingleObject(waitHandle, callback, null, defaultArg millisecondsTimeout Timeout.Infinite, true)
             try
-                return! tcs.Task
+                return! tcs.Await
             finally
                 handle.Unregister null |> ignore
         }
@@ -458,12 +449,7 @@ module Async2TaskLikeExtensions =
             and ^Awaiter: (member get_IsCompleted: unit -> bool)
             and ^Awaiter: (member GetResult: unit -> 'T)>
             (task: ^TaskLike)
-            : Async2<'T> =
-            Async2(fun _ ->
-                __runtimeAsyncReturn (
-                    let awaiter = task.GetAwaiter()
-                    AsyncHelpers.UnsafeAwaitAwaiter awaiter
-                    awaiter.GetResult()))
+            : Async2<'T> = async2 { return! task }
 
         [<NoEagerConstraintApplication>]
         static member inline StartTaskImmediate< ^TaskLike, ^Awaiter, 'T
@@ -472,12 +458,7 @@ module Async2TaskLikeExtensions =
             and ^Awaiter: (member get_IsCompleted: unit -> bool)
             and ^Awaiter: (member GetResult: unit -> 'T)>
             (createTask: CancellationToken -> ^TaskLike)
-            : Async2<'T> =
-            Async2(fun ct ->
-                __runtimeAsyncReturn (
-                    let awaiter = (createTask ct).GetAwaiter()
-                    AsyncHelpers.UnsafeAwaitAwaiter awaiter
-                    awaiter.GetResult()))
+            : Async2<'T> = async2 {let! ct = Async2.CancellationToken in return! createTask ct}
 
 [<AutoOpen>]
 module CommonExtensions =

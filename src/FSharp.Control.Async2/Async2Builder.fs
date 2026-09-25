@@ -77,8 +77,8 @@ module Async2BuilderSources =
 open Async2BuilderSources
 
 [<Sealed; NoEquality; NoComparison; CompiledName("FSharpAsync2`1")>]
-type Async2<'T> (start: CancellationToken -> Task<'T>) =
-    member _.Start = start
+type Async2<'T> (start: CancellationToken -> ValueTask<'T>) =
+    member _.Start ct = start ct |> _.AsTask()
 
 type Async2Code<'T> = CancellationToken -> 'T
 
@@ -187,7 +187,7 @@ type Async2Builder() =
         Cold(fun ct -> computation.Start ct |> AsyncHelpers.Await)
 
     member inline _.Run([<InlineIfLambda>] code: Async2Code<'T>) : Async2<'T> =
-        Async2(fun ct -> __runtimeAsyncReturn (code ct))
+        Async2(fun ct -> __runtimeAsyncReturnValueTask (code ct))
 
 [<AutoOpen>]
 module Async2BuilderAsyncDisposableExtensions =
