@@ -56,29 +56,6 @@ module internal Async2RuntimeHelpers =
         computation.Start cancellationToken
         |> _.ContinueWith((fun (t: Task<_>) -> t.Result), cancellationToken)
 
-    let continueWithResult (task: Task<'T>) (continuation: Task<'T> -> 'U) : Task<'U> =
-        task.ContinueWith(
-            Func<Task<'T>, 'U>(fun (completed: Task<'T>) ->
-                continuation completed),
-            CancellationToken.None,
-            TaskContinuationOptions.ExecuteSynchronously,
-            TaskScheduler.Default
-        )
-
-    let cancelOnFault (cancellationToken: CancellationTokenSource) (task: Task<'T>) =
-        task.ContinueWith(
-            Action<Task<'T>>(fun completed ->
-                if completed.IsFaulted then
-                    try
-                        cancellationToken.Cancel()
-                    with _ ->
-                        ()),
-            CancellationToken.None,
-            TaskContinuationOptions.ExecuteSynchronously,
-            TaskScheduler.Default
-        )
-        |> ignore
-
     let cancellationTokenAsync = Async2(fun ct -> __runtimeAsyncReturnValueTask ct)
 
 open Async2RuntimeHelpers
