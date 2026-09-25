@@ -143,11 +143,12 @@ module internal Async2StartTrampoline =
             current.IsRunning <- true
 
             try
-                let task = start ()
-                drain current
-                task
+                start ()
             finally
-                current.IsRunning <- false
+                try
+                    drain current
+                finally
+                    current.IsRunning <- false
 
     let startIsolated<'T> (startComputation: unit -> Task<'T>) =
         let previous = state.Value
