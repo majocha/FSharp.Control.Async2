@@ -1,5 +1,8 @@
 namespace FSharp.Core.UnitTests
 
+[<assembly: Xunit.CaptureConsole>]
+do ()
+
 open System.Threading
 
 module LibraryTestFx =

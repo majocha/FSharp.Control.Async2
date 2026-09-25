@@ -74,8 +74,7 @@ module internal Async2RuntimeHelpers =
         Task.Run<'T>(fun () -> computation.Start cancellationToken)
 
     let startImmediate cancellationToken (computation: Async2<_>) =
-        computation.Start cancellationToken
-        //|> _.ContinueWith((fun (t: Task<_>) -> t.Result), cancellationToken)
+        computation.StartInIsolatedTrampoline cancellationToken
 
     let cancellationTokenAsync = Async2(fun ct -> __runtimeAsyncReturnValueTask ct)
 
@@ -451,7 +450,7 @@ type Async2 =
             ?cancellationToken: CancellationToken
         ) =
         let cancellationToken = getToken cancellationToken
-        let task = computation.Start cancellationToken
+        let task = computation.StartInIsolatedTrampoline cancellationToken
 
         let invoke () =
             let result =

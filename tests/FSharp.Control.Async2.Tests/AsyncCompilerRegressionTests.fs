@@ -67,3 +67,33 @@ module AsyncCompilerRegressionTests =
             }
 
         Assert.Equal(0, Async2.RunSynchronously(loop 10_000))
+
+    [<Fact>]
+    let ``Immediate entry points drain nested work in a running trampoline`` () =
+        let nested = async2 {
+            do! Async2.FromContinuations(fun (success, _, _) -> success())
+        }
+
+        let parent = async2 {
+            do! Async2.FromContinuations(fun (success, _, _) ->
+                let mutable immediate = false
+                let mutable continued = false
+
+                Async2.StartImmediate(async2 {
+                    do! nested
+                    immediate <- true
+                })
+
+                Async2.StartWithContinuations(
+                    nested,
+                    (fun () -> continued <- true),
+                    (fun error -> raise error),
+                    (fun error -> raise error)
+                )
+
+                Assert.True(immediate, "StartImmediate deferred work to the enclosing trampoline")
+                Assert.True(continued, "StartWithContinuations deferred work to the enclosing trampoline")
+                success())
+        }
+
+        Async2.RunSynchronouslyImmediate parent
