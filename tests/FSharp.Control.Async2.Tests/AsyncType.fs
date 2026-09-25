@@ -558,51 +558,45 @@ type AsyncType() =
         tcs.TrySetResult() |> ignore // clean up
         res.Task.Wait()
 
-    (* When an AggregateException has multiple inner exceptions, Await and AwaitTask behave identically *)
+    (* Task awaiters surface the first exception from a faulted task's AggregateException. *)
 
     [<Theory; InlineData(false); InlineData(true)>]
-    member _.``Await and AwaitTask(Task<'T>) valid AggregateException is surfaced``(newAwait) =
+    member _.``Await and AwaitTask(Task<'T>) multiple exceptions surface the first``(newAwait) =
         let tcs = TaskCompletionSource<int>()
         tcs.SetException [ ArgumentException "a" :> exn; InvalidOperationException "b" :> exn ]
         let a = async2 {
             try
                 let! _ = tcs.Task |> if newAwait then Async2.Await else Async2.AwaitTask
                 return false
-            with :? AggregateException as ae -> return ae.InnerExceptions.Count = 2
+            with :? ArgumentException as error -> return error.Message = "a"
         }
         Assert.True(asyncWaitImm a)
 
     [<Theory; InlineData(false); InlineData(true)>]
-    member _.``Await and AwaitTask(Task) valid AggregateException is surfaced``(newAwait) =
+    member _.``Await and AwaitTask(Task) multiple exceptions surface the first``(newAwait) =
         let tcs = TaskCompletionSource<unit>()
         tcs.SetException [| ArgumentException "a" :> exn; InvalidOperationException "b" |]
         let a = async2 {
             try
                 do! tcs.Task |> if newAwait then Async2.Await else Async2.AwaitTask
                 return false
-            with :? AggregateException as ae -> return ae.InnerExceptions.Count = 2
+            with :? ArgumentException as error -> return error.Message = "a"
         }
         Assert.True(asyncWaitImm a)
 
-    (* Async2.Await behavioral differences
-
-       The following tests demonstrate where Async2.Await deliberately differs from Async2.AwaitTask *)
-
-    // Async2.AwaitTask(Task) surfaces the wrapping AggregateException ...
     [<Fact>]
-    member _.``AwaitTask(Task) egregious AggregateException is unchanged``() =
+    member _.``AwaitTask(Task) unwraps a single exception``() =
         let tcs = TaskCompletionSource<unit>()
         tcs.SetException(ArgumentException "original")
         let a = async2 {
             try do! Async2.AwaitTask tcs.Task
                 return false
-            with :? AggregateException -> return true
+            with :? ArgumentException as error -> return error.Message = "original"
         }
         Assert.True(asyncWaitImm a)
 
-    // ... whereas Async2.Await(Task) surfaces the inner exception directly.
     [<Fact>]
-    member _.``Await(Task) egregious AggregateException is unwrapped``() =
+    member _.``Await(Task) unwraps a single exception``() =
         let tcs = TaskCompletionSource<unit>()
         tcs.SetException(ArgumentException "original")
         let a = async2 {
@@ -612,21 +606,19 @@ type AsyncType() =
         }
         Assert.True(asyncWaitImm a)
 
-    // Async2.AwaitTask(Task<'T>) surfaces the wrapping AggregateException ...
     [<Fact>]
-    member _.``AwaitTask(Task<'T>) egregious AggregateException is unchanged``() =
+    member _.``AwaitTask(Task<'T>) unwraps a single exception``() =
         let tcs = TaskCompletionSource<int>()
         tcs.SetException(ArgumentException "original")
         let a = async2 {
             try let! _ = Async2.AwaitTask tcs.Task
                 return false
-            with :? AggregateException -> return true
+            with :? ArgumentException as error -> return error.Message = "original"
         }
         Assert.True(asyncWaitImm a)
 
-    // ... whereas Async2.Await(Task<'T>) surfaces the inner exception directly.
     [<Fact>]
-    member _.``Await(Task<'T>) egregious AggregateException is unwrapped``() =
+    member _.``Await(Task<'T>) unwraps a single exception``() =
         let tcs = TaskCompletionSource<int>()
         tcs.SetException(ArgumentException "original")
         let a = async2 {
@@ -998,34 +990,31 @@ module AsyncAwaitStackTraceTests =
     [<Fact>]
     let ``Await Task-of-T: all three levels visible in stack trace`` () =
         let e = runAndCaptureException (async2 { do! Async2.Await(level2Task()) })
-        checkTrace 3 e
+        checkTrace 4 e
 
     [<Fact>]
     let ``Await Task (non-generic): all three levels visible in stack trace`` () =
         let e = runAndCaptureException (async2 { do! Async2.Await(level2Task() :> Task) })
-        checkTrace 3 e
+        checkTrace 5 e
         // Same behavior as the Task<'T> overload — see comment there.
 
 #if !NETFRAMEWORK
     [<Fact>]
     let ``Await ValueTask-of-T: all three levels visible in stack trace`` () =
-        // For a faulted ValueTask<unit>, IsCompletedSuccessfully is false; the overload falls
-        // through to AwaitTask, which takes the same path as the specific Task<'T> overload.
+        // The ValueTask is backed by a faulted task, so the same task-level frames remain visible.
         let e = runAndCaptureException (async2 { do! Async2.Await(ValueTask<unit>(level2Task())) })
-        checkTrace 3 e
+        checkTrace 4 e
 
     [<Fact>]
     let ``Await ValueTask (non-generic): all three levels visible in stack trace`` () =
-        // Same as ValueTask<'T>: falls through to AwaitUnitTask for the non-successfully-completed case.
+        // The non-generic await path includes its Async2 wrapper frames.
         let e = runAndCaptureException (async2 { do! Async2.Await(ValueTask(level2Task() :> Task)) })
 
-        checkTrace 3 e
+        checkTrace 5 e
 #endif
 
     [<Fact>]
     let ``Await task-like via SRTP overload: all three levels visible in stack trace`` () =
         let e = runAndCaptureException (async2 { do! Async2.Await(TaskWrapper(level2Task())) })
 
-        // 4 instead of 3 as current impl has an outer
-        //   at FSharp.Core.UnitTests.Control.AsyncAwaitStackTraceTests.e@836-9.Invoke(Tuple`3 tupledArg)
-        checkTrace 4 e
+        checkTrace 6 e

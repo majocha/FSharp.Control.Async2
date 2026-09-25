@@ -96,13 +96,29 @@ type Async2 =
     static member RunSynchronously(computation: Async2<'T>, ?timeout: int, ?cancellationToken: CancellationToken) =
         let timeout = defaultArg timeout Timeout.Infinite
         let ct = getToken cancellationToken
-        ignore timeout
-        computation |> startOnThreadPool ct |> _.GetAwaiter().GetResult()
+        let task =
+            if
+                timeout = Timeout.Infinite
+                && Thread.CurrentThread.IsThreadPoolThread
+                && Async2Builder.isAlreadyBackground ()
+            then
+                computation.StartInIsolatedTrampoline ct
+            else
+                computation |> startOnThreadPool ct
+
+        if timeout <> Timeout.Infinite then
+            try
+                if not (task.Wait timeout) then
+                    raise (TimeoutException())
+            with
+            | :? AggregateException -> ()
+
+        task.GetAwaiter().GetResult()
 
     static member RunSynchronouslyImmediate
         (computation: Async2<'T>, ?cancellationToken: CancellationToken)
         =
-        computation.Start(getToken cancellationToken)
+        computation.StartInIsolatedTrampoline(getToken cancellationToken)
             .GetAwaiter()
             .GetResult()
 
@@ -323,17 +339,23 @@ type Async2 =
 
                 AsyncHelpers.Await completion.Task))
 
-    static member AwaitTask(task: Task<'T>) : Async2<'T> = async2 { return! task }
+    static member AwaitTask(task: Task<'T>) : Async2<'T> =
+        Async2(fun _ -> ValueTask<'T>(task))
 
-    static member AwaitTask(task: Task) : Async2<unit> = async2 { return! task }
+    static member AwaitTask(task: Task) : Async2<unit> =
+        async2 { return! task }
 
-    static member Await(task: Task<'T>) : Async2<'T> = async2 { return! task }
+    static member Await(task: Task<'T>) : Async2<'T> =
+        Async2(fun _ -> ValueTask<'T>(task))
 
-    static member Await(task: Task) : Async2<unit> = async2 { return! task }
+    static member Await(task: Task) : Async2<unit> =
+        async2 { return! task }
 
-    static member Await(task: ValueTask<'T>) : Async2<'T> = async2 { return! task }
+    static member Await(task: ValueTask<'T>) : Async2<'T> =
+        Async2(fun _ -> task)
 
-    static member Await(task: ValueTask) : Async2<unit> = async2 { return! task }
+    static member Await(task: ValueTask) : Async2<unit> =
+        async2 { return! task }
 
     static member StartTaskImmediate(createTask: CancellationToken -> Task<'T>) : Async2<'T> =
         async2 { let! ct = Async2.CancellationToken in return! createTask ct }
@@ -423,17 +445,34 @@ type Async2 =
             cancellationContinuation: OperationCanceledException -> unit,
             ?cancellationToken: CancellationToken
         ) =
-        async2 {
-            try
-                let! result = computation
-                continuation result
-            with
-            | :? OperationCanceledException as ex ->
-                cancellationContinuation ex
-            | ex ->
-                exceptionContinuation ex
-        }
-        |> startImmediate (getToken cancellationToken) |> ignore
+        let cancellationToken = getToken cancellationToken
+        let task = computation.Start cancellationToken
+
+        let invoke () =
+            let result =
+                try
+                    Choice1Of2(task.GetAwaiter().GetResult())
+                with error ->
+                    Choice2Of2 error
+
+            match result with
+            | Choice1Of2 value ->
+                continuation value
+            | Choice2Of2 (:? OperationCanceledException as error) ->
+                cancellationContinuation error
+            | Choice2Of2 error ->
+                exceptionContinuation error
+
+        if task.IsCompleted then
+            invoke ()
+        else
+            task.ContinueWith(
+                Action<Task<'T>>(fun _ -> invoke ()),
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default
+            )
+            |> ignore
 
     static member StartImmediate(computation: Async2<unit>, ?cancellationToken: CancellationToken) =
         let ct = getToken cancellationToken
