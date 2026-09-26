@@ -106,6 +106,32 @@ let ``channel source and async2 sources forward cancellation`` () =
     Assert.Equal(cts.Token, Async2.RunSynchronouslyImmediate(AsyncSeq2.tryFirst source, cancellationToken = cts.Token).Value)
 
 [<Fact>]
+let ``ofAsync2 collections are cold repeatable and inherit the enumeration token`` () =
+    use cts = new CancellationTokenSource()
+    let mutable calls = 0
+    let computations =
+        [ 1; 2 ] |> List.map (fun value -> async2 {
+            let! token = Async2.CancellationToken
+            Assert.Equal(cts.Token, token)
+            calls <- calls + 1
+            return value
+        })
+    let sources =
+        [ AsyncSeq2.ofAsync2Seq computations
+          AsyncSeq2.ofAsync2List computations
+          AsyncSeq2.ofAsync2Array (List.toArray computations) ]
+    Assert.Equal(0, calls)
+    for source in sources do
+        for _ in 1..2 do
+            let values = Async2.RunSynchronouslyImmediate(AsyncSeq2.toArray source, cancellationToken = cts.Token)
+            Assert.Equal<int>([| 1; 2 |], values)
+    Assert.Equal(12, calls)
+    Assert.Throws<ArgumentNullException>(fun () ->
+        AsyncSeq2.ofAsync2Seq (null: seq<Async2<int>>) |> ignore) |> ignore
+    Assert.Throws<ArgumentNullException>(fun () ->
+        AsyncSeq2.ofAsync2Array (null: Async2<int> array) |> ignore) |> ignore
+
+[<Fact>]
 let ``indexed Async2 mapping sees the enumeration token`` () =
     use cts = new CancellationTokenSource()
     let projection i x = async2 {

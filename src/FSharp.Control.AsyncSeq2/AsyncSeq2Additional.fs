@@ -25,6 +25,18 @@ module AsyncSeq2AdditionalOperations =
                     yield value
             }
 
+        /// Enumerate Async2 computations in source order.
+        static member ofAsync2Seq(source: seq<Async2<'T>>) : AsyncSeq2<'T> =
+            AsyncSeq2.ofSeqAsync source
+
+        /// Enumerate a list of Async2 computations in source order.
+        static member ofAsync2List(source: Async2<'T> list) : AsyncSeq2<'T> =
+            AsyncSeq2.ofSeqAsync source
+
+        /// Enumerate an array of Async2 computations in source order.
+        static member ofAsync2Array(source: Async2<'T> array) : AsyncSeq2<'T> =
+            AsyncSeq2.ofSeqAsync source
+
         static member fromChannel(reader: ChannelReader<'T>) : AsyncSeq2<'T> =
             Internal.checkNonNull (nameof reader) reader
             asyncSeq2 {

@@ -20,6 +20,9 @@ The builder is adapted from FSharp.Control.TaskSeq (see `src/FSharp.Control.Asyn
 Each enumeration is cold; `GetAsyncEnumerator(token)` passes its token to
 bound `Async2` computations and nested asynchronous sequences. `async2` can
 consume an `AsyncSeq2<'T>` directly with `for`.
+`ofAsync2Seq`, `ofAsync2List`, and `ofAsync2Array` turn collections of cold
+`Async2` computations into sequences; `ofSeqAsync` remains an equivalent
+constructor for `seq<Async2<'T>>`.
 
 `AsyncSeq2` provides constructors, transformations, and the TaskSeq operation
 surface, as well as AsyncSeq-derived operations such as `cycle`, `rev`,
