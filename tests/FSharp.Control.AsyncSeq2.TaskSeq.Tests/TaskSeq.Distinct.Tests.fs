@@ -9,7 +9,7 @@ open Microsoft.FSharp.Control.AsyncSeq2Implementation
 //
 // AsyncSeq2.distinct
 // AsyncSeq2.distinctBy
-// TaskCallbacks.distinctByAsync
+// AsyncSeq2.distinctByAsync
 //
 
 
@@ -23,7 +23,7 @@ module EmptySeq =
     [<Fact>]
     let ``AsyncSeq2-distinctByAsync with null source raises`` () =
         assertNullArg
-        <| fun () -> TaskCallbacks.distinctByAsync (fun x -> Task.fromResult x) null
+        <| fun () -> AsyncSeq2.distinctByAsync (fun x -> async2 { return x }) null
 
     [<Theory; ClassData(typeof<TestEmptyVariants>)>]
     let ``AsyncSeq2-distinct on empty returns empty`` variant =
@@ -40,7 +40,7 @@ module EmptySeq =
     [<Theory; ClassData(typeof<TestEmptyVariants>)>]
     let ``AsyncSeq2-distinctByAsync on empty returns empty`` variant =
         Gen.getEmptyVariant variant
-        |> TaskCallbacks.distinctByAsync (fun x -> Task.fromResult x)
+        |> AsyncSeq2.distinctByAsync (fun x -> async2 { return x })
         |> verifyEmpty
 
 
@@ -176,7 +176,7 @@ module Functionality =
     let ``AsyncSeq2-distinctByAsync removes elements with duplicate projected keys`` () = task {
         let! result =
             asyncSeq2 { yield! [ 1; 2; 3; 4; 5; 6 ] }
-            |> TaskCallbacks.distinctByAsync (fun x -> task { return x % 3 })
+            |> AsyncSeq2.distinctByAsync (fun x -> async2 { return x % 3 })
             |> ColdTask.toListAsync
 
         result |> should equal [ 1; 2; 3 ]
@@ -194,7 +194,7 @@ module Functionality =
 
         let! byAsync =
             asyncSeq2 { yield! input }
-            |> TaskCallbacks.distinctByAsync (fun x -> task { return projection x })
+            |> AsyncSeq2.distinctByAsync (fun x -> async2 { return projection x })
             |> ColdTask.toListAsync
 
         bySync |> should equal byAsync

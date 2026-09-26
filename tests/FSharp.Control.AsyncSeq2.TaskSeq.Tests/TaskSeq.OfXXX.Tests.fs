@@ -2,6 +2,7 @@ module AsyncSeq2.Tests.``Conversion-From``
 
 open Xunit
 open FsUnit.Xunit
+open System.Threading
 
 open Microsoft.FSharp.Control
 open Microsoft.FSharp.Control.AsyncSeq2Implementation
@@ -16,6 +17,8 @@ module EmptySeq =
         // note: ofList and its variants do not have null as proper value
         assertNullArg <| fun () -> AsyncSeq2.ofAsyncArray null
         assertNullArg <| fun () -> AsyncSeq2.ofAsyncSeq null
+        assertNullArg <| fun () -> AsyncSeq2.ofAsync2Array null
+        assertNullArg <| fun () -> AsyncSeq2.ofAsync2Seq null
         assertNullArg <| fun () -> AsyncSeq2.ofTaskArray null
         assertNullArg <| fun () -> AsyncSeq2.ofTaskSeq null
         assertNullArg <| fun () -> AsyncSeq2.ofResizeArray null
@@ -38,6 +41,24 @@ module EmptySeq =
     let ``AsyncSeq2-ofAsyncSeq with empty set`` () =
         Seq.init 0 (fun x -> async { return x })
         |> AsyncSeq2.ofAsyncSeq
+        |> verifyEmpty
+
+    [<Fact>]
+    let ``AsyncSeq2-ofAsync2Array with empty set`` () =
+        Array.init 0 (fun x -> async2 { return x })
+        |> AsyncSeq2.ofAsync2Array
+        |> verifyEmpty
+
+    [<Fact>]
+    let ``AsyncSeq2-ofAsync2List with empty set`` () =
+        List.init 0 (fun x -> async2 { return x })
+        |> AsyncSeq2.ofAsync2List
+        |> verifyEmpty
+
+    [<Fact>]
+    let ``AsyncSeq2-ofAsync2Seq with empty set`` () =
+        Seq.init 0 (fun x -> async2 { return x })
+        |> AsyncSeq2.ofAsync2Seq
         |> verifyEmpty
 
     [<Fact>]
@@ -91,6 +112,24 @@ module Immutable =
         |> validateSequence
 
     [<Fact>]
+    let ``AsyncSeq2-ofAsync2Array should succeed`` () =
+        Array.init 10 (fun x -> async2 { return x })
+        |> AsyncSeq2.ofAsync2Array
+        |> validateSequence
+
+    [<Fact>]
+    let ``AsyncSeq2-ofAsync2List should succeed`` () =
+        List.init 10 (fun x -> async2 { return x })
+        |> AsyncSeq2.ofAsync2List
+        |> validateSequence
+
+    [<Fact>]
+    let ``AsyncSeq2-ofAsync2Seq should succeed`` () =
+        Seq.init 10 (fun x -> async2 { return x })
+        |> AsyncSeq2.ofAsync2Seq
+        |> validateSequence
+
+    [<Fact>]
     let ``AsyncSeq2-ofTaskArray should succeed`` () =
         Array.init 10 (fun x -> task { return x })
         |> AsyncSeq2.ofTaskArray
@@ -124,6 +163,27 @@ module Immutable =
     let ``AsyncSeq2-ofSeq should succeed`` () = Seq.init 10 id |> AsyncSeq2.ofSeq |> validateSequence
 
 module SideEffects =
+    [<Fact>]
+    let ``ofAsync2Seq re-evaluates cold computations with the enumeration token`` () = task {
+        use cts = new CancellationTokenSource()
+        let mutable calls = 0
+        let computations = seq {
+            for i in 1..3 do
+                yield async2 {
+                    let! token = Async2.CancellationToken
+                    token |> should equal cts.Token
+                    calls <- calls + 1
+                    return i
+                }
+        }
+        let source = AsyncSeq2.ofAsync2Seq computations
+        calls |> should equal 0
+        for pass in 1..2 do
+            let! values = Async2.StartAsTask(AsyncSeq2.toArray source, cancellationToken = cts.Token)
+            values |> should equal [| 1; 2; 3 |]
+            calls |> should equal (pass * 3)
+    }
+
     [<Fact>]
     let ``ofSeq re-evaluates the underlying source seq on each re-enumeration`` () = task {
         let mutable count = 0

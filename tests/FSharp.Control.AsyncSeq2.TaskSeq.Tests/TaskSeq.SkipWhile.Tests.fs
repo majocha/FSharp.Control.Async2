@@ -8,9 +8,9 @@ open Microsoft.FSharp.Control.AsyncSeq2Implementation
 
 //
 // AsyncSeq2.skipWhile
-// TaskCallbacks.skipWhileAsync
+// AsyncSeq2.skipWhileAsync
 // AsyncSeq2.skipWhileInclusive
-// TaskCallbacks.skipWhileInclusiveAsync
+// AsyncSeq2.skipWhileInclusiveAsync
 //
 
 exception SideEffectPastEnd of string
@@ -30,7 +30,7 @@ module EmptySeq =
 
         do!
             Gen.getEmptyVariant variant
-            |> TaskCallbacks.skipWhileAsync ((=) 12 >> Task.fromResult)
+            |> AsyncSeq2.skipWhileAsync (fun x -> async2 { return x = 12 })
             |> verifyEmpty
     }
 
@@ -43,7 +43,7 @@ module EmptySeq =
 
         do!
             Gen.getEmptyVariant variant
-            |> TaskCallbacks.skipWhileInclusiveAsync ((=) 12 >> Task.fromResult)
+            |> AsyncSeq2.skipWhileInclusiveAsync (fun x -> async2 { return x = 12 })
             |> verifyEmpty
     }
 
@@ -67,7 +67,7 @@ module Immutable =
 
         do!
             Gen.getSeqImmutable variant
-            |> TaskCallbacks.skipWhileAsync (fun x -> task { return x < 5 })
+            |> AsyncSeq2.skipWhileAsync (fun x -> async2 { return x < 5 })
             |> verifyDigitsAsString "EFGHIJ"
     }
 
@@ -80,7 +80,7 @@ module Immutable =
 
         do!
             Gen.getSeqImmutable variant
-            |> TaskCallbacks.skipWhileAsync ((=) 0 >> Task.fromResult)
+            |> AsyncSeq2.skipWhileAsync (fun x -> async2 { return x = 0 })
             |> verifyDigitsAsString "ABCDEFGHIJ" // all 10 remain!
     }
 
@@ -99,7 +99,7 @@ module Immutable =
 
         do!
             Gen.getSeqImmutable variant
-            |> TaskCallbacks.skipWhileInclusiveAsync (fun x -> task { return x < 5 })
+            |> AsyncSeq2.skipWhileInclusiveAsync (fun x -> async2 { return x < 5 })
             |> verifyDigitsAsString "FGHIJ"
     }
 
@@ -113,7 +113,7 @@ module Immutable =
 
         do!
             Gen.getSeqImmutable variant
-            |> TaskCallbacks.skipWhileInclusiveAsync (fun x -> Task.fromResult (x > -1))
+            |> AsyncSeq2.skipWhileInclusiveAsync (fun x -> async2 { return x > -1 })
             |> verifyEmpty
     }
 
@@ -126,7 +126,7 @@ module Immutable =
 
         do!
             Gen.getSeqImmutable variant
-            |> TaskCallbacks.skipWhileInclusiveAsync ((=) 0 >> Task.fromResult)
+            |> AsyncSeq2.skipWhileInclusiveAsync (fun x -> async2 { return x = 0 })
             |> verifyDigitsAsString "BCDEFGHIJ"
     }
 
@@ -146,7 +146,7 @@ module SideEffects =
 
         do!
             Gen.getSeqWithSideEffect variant
-            |> TaskCallbacks.skipWhileAsync (fun x -> task { return x < 6 })
+            |> AsyncSeq2.skipWhileAsync (fun x -> async2 { return x < 6 })
             |> verifyDigitsAsString "FGHIJ"
     }
 
@@ -165,7 +165,7 @@ module SideEffects =
 
         do!
             Gen.getSeqWithSideEffect variant
-            |> TaskCallbacks.skipWhileInclusiveAsync (fun x -> task { return x < 6 })
+            |> AsyncSeq2.skipWhileInclusiveAsync (fun x -> async2 { return x < 6 })
             |> verifyDigitsAsString "GHIJ"
     }
 
@@ -194,10 +194,10 @@ module SideEffects =
             do! testSkipper (AsyncSeq2.skipWhileInclusive ((=) 43)) [||]
             x |> should equal 44
 
-            do! testSkipper (TaskCallbacks.skipWhileAsync (fun x -> Task.fromResult (x = 44))) [| 88 |]
+            do! testSkipper (AsyncSeq2.skipWhileAsync (fun x -> async2 { return x = 44 })) [| 88 |]
             x |> should equal 45
 
-            do! testSkipper (TaskCallbacks.skipWhileInclusiveAsync (fun x -> Task.fromResult (x = 45))) [||]
+            do! testSkipper (AsyncSeq2.skipWhileInclusiveAsync (fun x -> async2 { return x = 45 })) [||]
             x |> should equal 46
         }
 
@@ -227,10 +227,10 @@ module SideEffects =
             do! testSkipper (AsyncSeq2.skipWhileInclusive ((=) 245)) [||]
             x |> should equal 447
 
-            do! testSkipper (TaskCallbacks.skipWhileAsync (fun x -> Task.fromResult (x = 448))) [| 900 |]
+            do! testSkipper (AsyncSeq2.skipWhileAsync (fun x -> async2 { return x = 448 })) [| 900 |]
             x |> should equal 650
 
-            do! testSkipper (TaskCallbacks.skipWhileInclusiveAsync (fun x -> Task.fromResult (x = 651))) [||]
+            do! testSkipper (AsyncSeq2.skipWhileInclusiveAsync (fun x -> async2 { return x = 651 })) [||]
             x |> should equal 853
         }
 
@@ -259,7 +259,7 @@ module SideEffects =
         let ts = Gen.getSeqWithSideEffect variant
 
         let! first =
-            TaskCallbacks.skipWhileInclusiveAsync (fun x -> task { return x < 5 }) ts
+            AsyncSeq2.skipWhileInclusiveAsync (fun x -> async2 { return x < 5 }) ts
             |> ColdTask.toArrayAsync
 
         let expected = [| 6..10 |]
@@ -268,7 +268,7 @@ module SideEffects =
         // side effect, reiterating causes it to resume from where we left it (minus the failing item)
         // which means the original sequence has now changed due to the side effect
         let! repeat =
-            TaskCallbacks.skipWhileInclusiveAsync (fun x -> task { return x < 5 }) ts
+            AsyncSeq2.skipWhileInclusiveAsync (fun x -> async2 { return x < 5 }) ts
             |> ColdTask.toArrayAsync
 
         repeat |> should not' (equal expected)
@@ -292,13 +292,13 @@ module Other =
         do!
             [ 1; 2; 2; 3; 3; 2; 1 ]
             |> AsyncSeq2.ofSeq
-            |> TaskCallbacks.skipWhileAsync (fun x -> Task.fromResult (x <= 2))
+            |> AsyncSeq2.skipWhileAsync (fun x -> async2 { return x <= 2 })
             |> verifyDigitsAsString "CCBA"
 
         do!
             [ 1; 2; 2; 3; 3; 2; 1 ]
             |> AsyncSeq2.ofSeq
-            |> TaskCallbacks.skipWhileInclusiveAsync (fun x -> Task.fromResult (x <= 2))
+            |> AsyncSeq2.skipWhileInclusiveAsync (fun x -> async2 { return x <= 2 })
             |> verifyDigitsAsString "CBA"
     }
 
@@ -317,5 +317,5 @@ module Other =
 
         testSkipper (AsyncSeq2.skipWhile (fun x -> x <= 2))
         testSkipper (AsyncSeq2.skipWhileInclusive (fun x -> x <= 2))
-        testSkipper (TaskCallbacks.skipWhileAsync (fun x -> Task.fromResult (x <= 2)))
-        testSkipper (TaskCallbacks.skipWhileInclusiveAsync (fun x -> Task.fromResult (x <= 2)))
+        testSkipper (AsyncSeq2.skipWhileAsync (fun x -> async2 { return x <= 2 }))
+        testSkipper (AsyncSeq2.skipWhileInclusiveAsync (fun x -> async2 { return x <= 2 }))

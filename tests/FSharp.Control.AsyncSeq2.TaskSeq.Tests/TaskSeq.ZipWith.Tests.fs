@@ -8,9 +8,9 @@ open Microsoft.FSharp.Control.AsyncSeq2Implementation
 
 //
 // AsyncSeq2.zipWith
-// TaskCallbacks.zipWithAsync
+// AsyncSeq2.zipWithAsync
 // AsyncSeq2.zipWith3
-// TaskCallbacks.zipWithAsync3
+// AsyncSeq2.zipWithAsync3
 //
 
 module EmptySeq =
@@ -28,10 +28,10 @@ module EmptySeq =
     [<Fact>]
     let ``Null source is invalid for zipWithAsync`` () =
         assertNullArg
-        <| fun () -> TaskCallbacks.zipWithAsync (fun a b -> Task.fromResult (a + b)) null (AsyncSeq2.empty ())
+        <| fun () -> AsyncSeq2.zipWithAsync (fun a b -> async2 { return a + b }) null (AsyncSeq2.empty ())
 
         assertNullArg
-        <| fun () -> TaskCallbacks.zipWithAsync (fun a b -> Task.fromResult (a + b)) (AsyncSeq2.empty ()) null
+        <| fun () -> AsyncSeq2.zipWithAsync (fun a b -> async2 { return a + b }) (AsyncSeq2.empty ()) null
 
     [<Fact>]
     let ``Null source is invalid for zipWith3`` () =
@@ -46,16 +46,16 @@ module EmptySeq =
 
     [<Fact>]
     let ``Null source is invalid for zipWithAsync3`` () =
-        let f a b c = Task.fromResult (a + b + c)
+        let f a b c = async2 { return a + b + c }
 
         assertNullArg
-        <| fun () -> TaskCallbacks.zipWithAsync3 f null (AsyncSeq2.empty ()) (AsyncSeq2.empty ())
+        <| fun () -> AsyncSeq2.zipWithAsync3 f null (AsyncSeq2.empty ()) (AsyncSeq2.empty ())
 
         assertNullArg
-        <| fun () -> TaskCallbacks.zipWithAsync3 f (AsyncSeq2.empty ()) null (AsyncSeq2.empty ())
+        <| fun () -> AsyncSeq2.zipWithAsync3 f (AsyncSeq2.empty ()) null (AsyncSeq2.empty ())
 
         assertNullArg
-        <| fun () -> TaskCallbacks.zipWithAsync3 f (AsyncSeq2.empty ()) (AsyncSeq2.empty ()) null
+        <| fun () -> AsyncSeq2.zipWithAsync3 f (AsyncSeq2.empty ()) (AsyncSeq2.empty ()) null
 
     [<Theory; ClassData(typeof<TestEmptyVariants>)>]
     let ``AsyncSeq2-zipWith with two empty gives empty`` variant =
@@ -90,7 +90,7 @@ module Immutable =
         let two = Gen.getSeqImmutable variant
 
         let! result =
-            TaskCallbacks.zipWithAsync (fun a b -> Task.fromResult (a * b)) one two
+            AsyncSeq2.zipWithAsync (fun a b -> async2 { return a * b }) one two
             |> ColdTask.toArrayAsync
 
         result
@@ -118,7 +118,7 @@ module Immutable =
         let s3 = Gen.getSeqImmutable variant
 
         let! result =
-            TaskCallbacks.zipWithAsync3 (fun a b c -> Task.fromResult (a + b + c)) s1 s2 s3
+            AsyncSeq2.zipWithAsync3 (fun a b c -> async2 { return a + b + c }) s1 s2 s3
             |> ColdTask.toArrayAsync
 
         result
@@ -193,7 +193,7 @@ module SideEffects =
         let s2 = Gen.getSeqWithSideEffect variant
 
         let! result =
-            TaskCallbacks.zipWithAsync (fun a b -> Task.fromResult (a * b)) s1 s2
+            AsyncSeq2.zipWithAsync (fun a b -> async2 { return a * b }) s1 s2
             |> ColdTask.toArrayAsync
 
         result

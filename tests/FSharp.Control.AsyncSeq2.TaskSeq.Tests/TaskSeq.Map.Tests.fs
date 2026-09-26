@@ -6,15 +6,11 @@ open FsUnit.Xunit
 open Microsoft.FSharp.Control
 open Microsoft.FSharp.Control.AsyncSeq2Implementation
 
-module private PortMap =
-    let mapAsync (mapping: 'T -> System.Threading.Tasks.Task<'U>) (source: AsyncSeq2<'T>) =
-        AsyncSeq2.mapAsync (fun item -> Async2.Await(mapping item)) source
-
 //
 // AsyncSeq2.map
 // AsyncSeq2.mapi
-// PortMap.mapAsync
-// TaskCallbacks.mapiAsync
+// AsyncSeq2.mapAsync
+// AsyncSeq2.mapiAsync
 //
 
 /// Asserts that a sequence contains the char values 'A'..'J'.
@@ -45,10 +41,10 @@ module EmptySeq =
         assertNullArg <| fun () -> AsyncSeq2.mapi (fun _ _ -> ()) null
 
         assertNullArg
-        <| fun () -> PortMap.mapAsync (fun _ -> Task.fromResult ()) null
+        <| fun () -> AsyncSeq2.mapAsync (fun _ -> async2 { return () }) null
 
         assertNullArg
-        <| fun () -> TaskCallbacks.mapiAsync (fun _ _ -> Task.fromResult ()) null
+        <| fun () -> AsyncSeq2.mapiAsync (fun _ _ -> async2 { return () }) null
 
     [<Theory; ClassData(typeof<TestEmptyVariants>)>]
     let ``AsyncSeq2-map empty`` variant =
@@ -65,13 +61,13 @@ module EmptySeq =
     [<Theory; ClassData(typeof<TestEmptyVariants>)>]
     let ``AsyncSeq2-mapAsync empty`` variant =
         Gen.getEmptyVariant variant
-        |> PortMap.mapAsync (fun item -> task { return char (item + 64) })
+        |> AsyncSeq2.mapAsync (fun item -> async2 { return char (item + 64) })
         |> verifyEmpty
 
     [<Theory; ClassData(typeof<TestEmptyVariants>)>]
     let ``AsyncSeq2-mapiAsync empty`` variant =
         Gen.getEmptyVariant variant
-        |> TaskCallbacks.mapiAsync (fun i _ -> task { return char (i + 65) })
+        |> AsyncSeq2.mapiAsync (fun i _ -> async2 { return char (i + 65) })
         |> verifyEmpty
 
 
@@ -91,13 +87,13 @@ module Immutable =
     [<Theory; ClassData(typeof<TestImmTaskSeq>)>]
     let ``AsyncSeq2-mapAsync maps in correct order`` variant =
         Gen.getSeqImmutable variant
-        |> PortMap.mapAsync (fun item -> task { return char (item + 64) })
+        |> AsyncSeq2.mapAsync (fun item -> async2 { return char (item + 64) })
         |> validateSequence
 
     [<Theory; ClassData(typeof<TestImmTaskSeq>)>]
     let ``AsyncSeq2-mapiAsync maps in correct order`` variant =
         Gen.getSeqImmutable variant
-        |> TaskCallbacks.mapiAsync (fun i _ -> task { return char (i + 65) })
+        |> AsyncSeq2.mapiAsync (fun i _ -> async2 { return char (i + 65) })
         |> validateSequence
 
 module SideEffects =
@@ -157,9 +153,9 @@ module SideEffects =
         // point of this test: just calling 'map' won't execute anything of the sequence!
         let _ =
             ts
-            |> PortMap.mapAsync (fun x -> task { return x + 10 })
-            |> PortMap.mapAsync (fun x -> task { return x + 10 })
-            |> PortMap.mapAsync (fun x -> task { return x + 10 })
+            |> AsyncSeq2.mapAsync (fun x -> async2 { return x + 10 })
+            |> AsyncSeq2.mapAsync (fun x -> async2 { return x + 10 })
+            |> AsyncSeq2.mapAsync (fun x -> async2 { return x + 10 })
 
         // multiple maps have no effect unless executed
         i |> should equal 0
@@ -178,9 +174,9 @@ module SideEffects =
         // point of this test: just calling 'map' won't execute anything of the sequence!
         let _ =
             ts
-            |> TaskCallbacks.mapiAsync (fun x _ -> task { return x + 10 })
-            |> TaskCallbacks.mapiAsync (fun x _ -> task { return x + 10 })
-            |> TaskCallbacks.mapiAsync (fun x _ -> task { return x + 10 })
+            |> AsyncSeq2.mapiAsync (fun x _ -> async2 { return x + 10 })
+            |> AsyncSeq2.mapiAsync (fun x _ -> async2 { return x + 10 })
+            |> AsyncSeq2.mapiAsync (fun x _ -> async2 { return x + 10 })
 
         // multiple maps have no effect unless executed
         i |> should equal 0
@@ -210,7 +206,7 @@ module SideEffects =
 
     [<Theory; ClassData(typeof<TestSideEffectTaskSeq>)>]
     let ``AsyncSeq2-mapAsync can map the same sequence multiple times`` variant = task {
-        let doMap = PortMap.mapAsync (fun item -> task { return char (item + 64) })
+        let doMap = AsyncSeq2.mapAsync (fun item -> async2 { return char (item + 64) })
         let ts = Gen.getSeqWithSideEffect variant
 
         // each time we do GetAsyncEnumerator(), and go through the whole sequence,
@@ -226,7 +222,7 @@ module SideEffects =
         let mutable sum = 0
 
         Gen.getSeqWithSideEffect variant
-        |> PortMap.mapAsync (fun _ -> task {
+        |> AsyncSeq2.mapAsync (fun _ -> async2 {
             sum <- sum + 1
             return char (sum + 64)
         })
@@ -238,7 +234,7 @@ module SideEffects =
         let mutable data = '0'
 
         Gen.getSeqWithSideEffect variant
-        |> TaskCallbacks.mapiAsync (fun i _ -> task {
+        |> AsyncSeq2.mapiAsync (fun i _ -> async2 {
             data <- char (i + 65)
             return data
         })

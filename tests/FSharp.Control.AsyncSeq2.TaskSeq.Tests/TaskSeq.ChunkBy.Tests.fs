@@ -8,7 +8,7 @@ open Microsoft.FSharp.Control.AsyncSeq2Implementation
 
 //
 // AsyncSeq2.chunkBy
-// TaskCallbacks.chunkByAsync
+// AsyncSeq2.chunkByAsync
 //
 
 module EmptySeq =
@@ -18,7 +18,7 @@ module EmptySeq =
         <| fun () -> AsyncSeq2.chunkBy id (null: AsyncSeq2<int>)
 
         assertNullArg
-        <| fun () -> TaskCallbacks.chunkByAsync (fun x -> Task.fromResult x) (null: AsyncSeq2<int>)
+        <| fun () -> AsyncSeq2.chunkByAsync (fun x -> async2 { return x }) (null: AsyncSeq2<int>)
 
     [<Theory; ClassData(typeof<TestEmptyVariants>)>]
     let ``AsyncSeq2-chunkBy on empty gives empty`` variant =
@@ -29,7 +29,7 @@ module EmptySeq =
     [<Theory; ClassData(typeof<TestEmptyVariants>)>]
     let ``AsyncSeq2-chunkByAsync on empty gives empty`` variant =
         Gen.getEmptyVariant variant
-        |> TaskCallbacks.chunkByAsync (fun x -> Task.fromResult x)
+        |> AsyncSeq2.chunkByAsync (fun x -> async2 { return x })
         |> verifyEmpty
 
 
@@ -111,7 +111,7 @@ module Functionality =
         let ts = asyncSeq2 { yield! [ 1; 1; 2; 3; 3 ] }
 
         let! result =
-            TaskCallbacks.chunkByAsync (fun x -> Task.fromResult (x % 2 = 0)) ts
+            AsyncSeq2.chunkByAsync (fun x -> async2 { return x % 2 = 0 }) ts
             |> ColdTask.toArrayAsync
         // odd, even, odd -> 3 chunks
         result |> should haveLength 3
@@ -153,7 +153,7 @@ module Functionality =
         let ts = Gen.getSeqImmutable variant
 
         let! result =
-            TaskCallbacks.chunkByAsync (fun _ -> Task.fromResult 0) ts
+            AsyncSeq2.chunkByAsync (fun _ -> async2 { return 0 }) ts
             |> ColdTask.toArrayAsync
 
         result |> should haveLength 1
@@ -179,7 +179,7 @@ module SideEffects =
     let ``AsyncSeq2-chunkByAsync on side-effect seq groups all elements under one key`` variant = task {
         let! result =
             Gen.getSeqWithSideEffect variant
-            |> TaskCallbacks.chunkByAsync (fun _ -> Task.fromResult 0)
+            |> AsyncSeq2.chunkByAsync (fun _ -> async2 { return 0 })
             |> ColdTask.toArrayAsync
 
         result |> should haveLength 1
@@ -227,7 +227,7 @@ module SideEffects =
 
         let! result =
             ts
-            |> TaskCallbacks.chunkByAsync (fun x -> task {
+            |> AsyncSeq2.chunkByAsync (fun x -> async2 {
                 callCount <- callCount + 1
                 return x % 2
             })

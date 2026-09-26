@@ -10,7 +10,7 @@ open Microsoft.FSharp.Control.AsyncSeq2Implementation
 
 //
 // AsyncSeq2.chooseV
-// TaskCallbacks.chooseVAsync
+// AsyncSeq2.chooseVAsync
 //
 
 module EmptySeq =
@@ -20,7 +20,7 @@ module EmptySeq =
         <| fun () -> AsyncSeq2.chooseV (fun _ -> ValueNone) null
 
         assertNullArg
-        <| fun () -> TaskCallbacks.chooseVAsync (fun _ -> Task.fromResult ValueNone) null
+        <| fun () -> AsyncSeq2.chooseVAsync (fun _ -> async2 { return ValueNone }) null
 
     [<Theory; ClassData(typeof<TestEmptyVariants>)>]
     let ``AsyncSeq2-chooseV`` variant = task {
@@ -36,7 +36,7 @@ module EmptySeq =
     let ``AsyncSeq2-chooseVAsync`` variant = task {
         let! empty =
             Gen.getEmptyVariant variant
-            |> TaskCallbacks.chooseVAsync (fun _ -> task { return ValueSome 42 })
+            |> AsyncSeq2.chooseVAsync (fun _ -> async2 { return ValueSome 42 })
             |> ColdTask.toListAsync
 
         List.isEmpty empty |> should be True
@@ -62,7 +62,7 @@ module Immutable =
 
     [<Theory; ClassData(typeof<TestImmTaskSeq>)>]
     let ``AsyncSeq2-chooseVAsync can convert and filter`` variant = task {
-        let chooser number = task {
+        let chooser number = async2 {
             return
                 if number <= 5 then
                     ValueSome(char number + '@')
@@ -72,8 +72,8 @@ module Immutable =
 
         let ts = Gen.getSeqImmutable variant
 
-        let! letters1 = TaskCallbacks.chooseVAsync chooser ts |> ColdTask.toArrayAsync
-        let! letters2 = TaskCallbacks.chooseVAsync chooser ts |> ColdTask.toArrayAsync
+        let! letters1 = AsyncSeq2.chooseVAsync chooser ts |> ColdTask.toArrayAsync
+        let! letters2 = AsyncSeq2.chooseVAsync chooser ts |> ColdTask.toArrayAsync
 
         String letters1 |> should equal "ABCDE"
         String letters2 |> should equal "ABCDE"
@@ -93,7 +93,7 @@ module Immutable2 =
 
         let! xs =
             ts
-            |> TaskCallbacks.chooseVAsync (fun x -> task { return ValueSome x })
+            |> AsyncSeq2.chooseVAsync (fun x -> async2 { return ValueSome x })
             |> ColdTask.toArrayAsync
 
         xs |> should equal [| 1..10 |]
@@ -112,7 +112,7 @@ module Immutable2 =
 
         do!
             ts
-            |> TaskCallbacks.chooseVAsync (fun _ -> task { return ValueNone })
+            |> AsyncSeq2.chooseVAsync (fun _ -> async2 { return ValueNone })
             |> verifyEmpty
     }
 
@@ -151,7 +151,7 @@ module Immutable2 =
 
     [<Fact>]
     let ``AsyncSeq2-chooseVAsync can change the element type`` () = task {
-        let chooser n = task {
+        let chooser n = async2 {
             return
                 if n % 2 = 0 then
                     ValueSome(sprintf "even-%d" n)
@@ -161,7 +161,7 @@ module Immutable2 =
 
         let! xs =
             asyncSeq2 { yield! [ 1..6 ] }
-            |> TaskCallbacks.chooseVAsync chooser
+            |> AsyncSeq2.chooseVAsync chooser
             |> ColdTask.toListAsync
 
         xs |> should equal [ "even-2"; "even-4"; "even-6" ]
@@ -191,7 +191,7 @@ module SideEffects =
     let ``AsyncSeq2-chooseVAsync applied multiple times`` variant = task {
         let ts = Gen.getSeqWithSideEffect variant
 
-        let chooser x number = task {
+        let chooser x number = async2 {
             return
                 if number <= x then
                     ValueSome(char number + '@')
@@ -199,9 +199,9 @@ module SideEffects =
                     ValueNone
         }
 
-        let! lettersA = TaskCallbacks.chooseVAsync (chooser 5) ts |> ColdTask.toArrayAsync
-        let! lettersK = TaskCallbacks.chooseVAsync (chooser 15) ts |> ColdTask.toArrayAsync
-        let! lettersU = TaskCallbacks.chooseVAsync (chooser 25) ts |> ColdTask.toArrayAsync
+        let! lettersA = AsyncSeq2.chooseVAsync (chooser 5) ts |> ColdTask.toArrayAsync
+        let! lettersK = AsyncSeq2.chooseVAsync (chooser 15) ts |> ColdTask.toArrayAsync
+        let! lettersU = AsyncSeq2.chooseVAsync (chooser 25) ts |> ColdTask.toArrayAsync
 
         String lettersA |> should equal "ABCDE"
         String lettersK |> should equal "KLMNO"
@@ -239,7 +239,7 @@ module SideEffects =
 
         let! xs =
             ts
-            |> TaskCallbacks.chooseVAsync (fun x -> task { return if x < 3 then ValueSome x else ValueNone })
+            |> AsyncSeq2.chooseVAsync (fun x -> async2 { return if x < 3 then ValueSome x else ValueNone })
             |> ColdTask.toListAsync
 
         count |> should equal 5

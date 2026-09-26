@@ -8,7 +8,7 @@ open Microsoft.FSharp.Control.AsyncSeq2Implementation
 
 //
 // AsyncSeq2.scan
-// TaskCallbacks.scanAsync
+// AsyncSeq2.scanAsync
 //
 
 module EmptySeq =
@@ -18,7 +18,7 @@ module EmptySeq =
         <| fun () -> AsyncSeq2.scan (fun _ _ -> 42) 0 null
 
         assertNullArg
-        <| fun () -> TaskCallbacks.scanAsync (fun _ _ -> Task.fromResult 42) 0 null
+        <| fun () -> AsyncSeq2.scanAsync (fun _ _ -> async2 { return 42 }) 0 null
 
     [<Theory; ClassData(typeof<TestEmptyVariants>)>]
     let ``AsyncSeq2-scan on empty returns singleton initial state`` variant = task {
@@ -34,7 +34,7 @@ module EmptySeq =
     let ``AsyncSeq2-scanAsync on empty returns singleton initial state`` variant = task {
         let! result =
             Gen.getEmptyVariant variant
-            |> TaskCallbacks.scanAsync (fun acc _ -> task { return acc + 1 }) 0
+            |> AsyncSeq2.scanAsync (fun acc _ -> async2 { return acc + 1 }) 0
             |> ColdTask.toListAsync
 
         result |> should equal [ 0 ]
@@ -56,7 +56,7 @@ module Functionality =
     let ``AsyncSeq2-scanAsync yields initial state then each intermediate state`` () = task {
         let! result =
             AsyncSeq2.ofList [ 1; 2; 3; 4; 5 ]
-            |> TaskCallbacks.scanAsync (fun acc item -> task { return acc + item }) 0
+            |> AsyncSeq2.scanAsync (fun acc item -> async2 { return acc + item }) 0
             |> ColdTask.toListAsync
 
         result |> should equal [ 0; 1; 3; 6; 10; 15 ]
@@ -80,7 +80,7 @@ module Functionality =
 
         let! result =
             input
-            |> TaskCallbacks.scanAsync (fun acc c -> task { return acc + string c }) ""
+            |> AsyncSeq2.scanAsync (fun acc c -> async2 { return acc + string c }) ""
             |> ColdTask.toListAsync
 
         result |> should equal [ ""; "a"; "ab"; "abc" ]
@@ -112,7 +112,7 @@ module Functionality =
     let ``AsyncSeq2-scanAsync accumulates correctly across variants`` variant = task {
         let! result =
             Gen.getSeqImmutable variant
-            |> TaskCallbacks.scanAsync (fun acc item -> task { return acc + item }) 0
+            |> AsyncSeq2.scanAsync (fun acc item -> async2 { return acc + item }) 0
             |> ColdTask.toListAsync
 
         result
@@ -148,7 +148,7 @@ module SideEffects =
 
         let! first =
             ts
-            |> TaskCallbacks.scanAsync (fun acc item -> task { return acc + item }) 0
+            |> AsyncSeq2.scanAsync (fun acc item -> async2 { return acc + item }) 0
             |> ColdTask.toListAsync
 
         first
@@ -156,7 +156,7 @@ module SideEffects =
 
         let! second =
             ts
-            |> TaskCallbacks.scanAsync (fun acc item -> task { return acc + item }) 0
+            |> AsyncSeq2.scanAsync (fun acc item -> async2 { return acc + item }) 0
             |> ColdTask.toListAsync
 
         second

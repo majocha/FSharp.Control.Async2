@@ -8,7 +8,7 @@ open Microsoft.FSharp.Control.AsyncSeq2Implementation
 
 //
 // AsyncSeq2.threadState
-// TaskCallbacks.threadStateAsync
+// AsyncSeq2.threadStateAsync
 //
 
 module EmptySeq =
@@ -18,7 +18,7 @@ module EmptySeq =
         <| fun () -> AsyncSeq2.threadState (fun s _ -> 0, s) 0 null
 
         assertNullArg
-        <| fun () -> TaskCallbacks.threadStateAsync (fun s _ -> Task.fromResult (0, s)) 0 null
+        <| fun () -> AsyncSeq2.threadStateAsync (fun s _ -> async2 { return 0, s }) 0 null
 
     [<Theory; ClassData(typeof<TestEmptyVariants>)>]
     let ``AsyncSeq2-threadState on empty gives empty`` variant =
@@ -29,7 +29,7 @@ module EmptySeq =
     [<Theory; ClassData(typeof<TestEmptyVariants>)>]
     let ``AsyncSeq2-threadStateAsync on empty gives empty`` variant =
         Gen.getEmptyVariant variant
-        |> TaskCallbacks.threadStateAsync (fun s _ -> Task.fromResult (0, s)) 0
+        |> AsyncSeq2.threadStateAsync (fun s _ -> async2 { return 0, s }) 0
         |> verifyEmpty
 
 
@@ -92,9 +92,9 @@ module Functionality =
     let ``AsyncSeq2-threadStateAsync running sum`` () = task {
         let ts = asyncSeq2 { yield! [ 1..5 ] }
 
-        let folder acc x = Task.fromResult (acc + x, acc + x)
+        let folder acc x = async2 { return acc + x, acc + x }
 
-        let! result = TaskCallbacks.threadStateAsync folder 0 ts |> ColdTask.toArrayAsync
+        let! result = AsyncSeq2.threadStateAsync folder 0 ts |> ColdTask.toArrayAsync
         result |> should equal [| 1; 3; 6; 10; 15 |]
     }
 
@@ -104,12 +104,12 @@ module Functionality =
         let ts2 = asyncSeq2 { yield! [ 1..10 ] }
 
         let syncFolder acc x = x - acc, x + acc
-        let asyncFolder acc x = Task.fromResult (syncFolder acc x)
+        let asyncFolder acc x = async2 { return syncFolder acc x }
 
         let! syncResult = AsyncSeq2.threadState syncFolder 0 ts |> ColdTask.toArrayAsync
 
         let! asyncResult =
-            TaskCallbacks.threadStateAsync asyncFolder 0 ts2
+            AsyncSeq2.threadStateAsync asyncFolder 0 ts2
             |> ColdTask.toArrayAsync
 
         syncResult |> should equal asyncResult
@@ -119,13 +119,13 @@ module Functionality =
     let ``AsyncSeq2-threadStateAsync with genuinely async folder`` () = task {
         let ts = asyncSeq2 { yield! [ 1..3 ] }
 
-        let folder state x = task {
+        let folder state x = async2 {
             // Use a real async operation to verify the async path works
-            let! v = Task.fromResult (x * 10)
-            return v, state + x
+            do! Async2.Sleep 1
+            return x * 10, state + x
         }
 
-        let! result = TaskCallbacks.threadStateAsync folder 0 ts |> ColdTask.toArrayAsync
+        let! result = AsyncSeq2.threadStateAsync folder 0 ts |> ColdTask.toArrayAsync
         // state: 0; x=1: result=10, state=1; x=2: result=20, state=3; x=3: result=30, state=6
         result |> should equal [| 10; 20; 30 |]
     }

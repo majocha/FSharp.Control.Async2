@@ -99,60 +99,6 @@ module ColdTask =
     let mapFoldAsync (mapping: 'State -> 'T -> Task<'U * 'State>) state source =
         AsyncSeq2.mapFoldAsync (fun acc value -> Async2.Await(mapping acc value)) state source |> Async2.StartAsTask
 
-module TaskCallbacks =
-    let replicateInfiniteAsync (computation: unit -> Task<'T>) =
-        AsyncSeq2.replicateInfiniteAsync (fun () -> Async2.Await(computation ()))
-    let replicateUntilNoneAsync (computation: unit -> Task<'T option>) =
-        AsyncSeq2.replicateUntilNoneAsync (fun () -> Async2.Await(computation ()))
-    let initAsync count (initializer: int -> Task<'T>) =
-        AsyncSeq2.initAsync count (initializer >> Async2.Await)
-    let initInfiniteAsync (initializer: int -> Task<'T>) =
-        AsyncSeq2.initInfiniteAsync (initializer >> Async2.Await)
-    let unfoldAsync (generator: 'State -> Task<('T * 'State) option>) state =
-        AsyncSeq2.unfoldAsync (generator >> Async2.Await) state
-    let mapiAsync (mapping: int -> 'T -> Task<'U>) source =
-        AsyncSeq2.mapiAsync (fun index value -> Async2.Await(mapping index value)) source
-    let collectAsync (binder: 'T -> Task<#AsyncSeq2<'U>>) source =
-        AsyncSeq2.collectAsync (fun value -> async2 {
-            let! inner = binder value
-            return inner :> AsyncSeq2<'U>
-        }) source
-    let collectSeqAsync (binder: 'T -> Task<#seq<'U>>) source =
-        AsyncSeq2.collectSeqAsync (fun value -> async2 {
-            let! inner = binder value
-            return inner :> seq<'U>
-        }) source
-    let chooseAsync (chooser: 'T -> Task<'U option>) source =
-        AsyncSeq2.chooseAsync (chooser >> Async2.Await) source
-    let chooseVAsync (chooser: 'T -> Task<'U voption>) source =
-        AsyncSeq2.chooseVAsync (chooser >> Async2.Await) source
-    let filterAsync (predicate: 'T -> Task<bool>) source =
-        AsyncSeq2.filterAsync (predicate >> Async2.Await) source
-    let whereAsync (predicate: 'T -> Task<bool>) source =
-        AsyncSeq2.whereAsync (predicate >> Async2.Await) source
-    let takeWhileAsync (predicate: 'T -> Task<bool>) source =
-        AsyncSeq2.takeWhileAsync (predicate >> Async2.Await) source
-    let takeWhileInclusiveAsync (predicate: 'T -> Task<bool>) source =
-        AsyncSeq2.takeWhileInclusiveAsync (predicate >> Async2.Await) source
-    let skipWhileAsync (predicate: 'T -> Task<bool>) source =
-        AsyncSeq2.skipWhileAsync (predicate >> Async2.Await) source
-    let skipWhileInclusiveAsync (predicate: 'T -> Task<bool>) source =
-        AsyncSeq2.skipWhileInclusiveAsync (predicate >> Async2.Await) source
-    let distinctByAsync (projection: 'T -> Task<'Key>) source =
-        AsyncSeq2.distinctByAsync (projection >> Async2.Await) source
-    let distinctUntilChangedWithAsync (comparer: 'T -> 'T -> Task<bool>) source =
-        AsyncSeq2.distinctUntilChangedWithAsync (fun a b -> Async2.Await(comparer a b)) source
-    let chunkByAsync (projection: 'T -> Task<'Key>) source =
-        AsyncSeq2.chunkByAsync (projection >> Async2.Await) source
-    let zipWithAsync (mapping: 'T -> 'U -> Task<'V>) first second =
-        AsyncSeq2.zipWithAsync (fun a b -> Async2.Await(mapping a b)) first second
-    let zipWithAsync3 (mapping: 'T -> 'U -> 'V -> Task<'W>) first second third =
-        AsyncSeq2.zipWithAsync3 (fun a b c -> Async2.Await(mapping a b c)) first second third
-    let scanAsync (folder: 'State -> 'T -> Task<'State>) state source =
-        AsyncSeq2.scanAsync (fun acc value -> Async2.Await(folder acc value)) state source
-    let threadStateAsync (folder: 'State -> 'T -> Task<'U * 'State>) state source =
-        AsyncSeq2.threadStateAsync (fun acc value -> Async2.Await(folder acc value)) state source
-
 type AsyncEnumStatus = BeforeAll | WithCurrent | AfterAll
 
 /// Milliseconds

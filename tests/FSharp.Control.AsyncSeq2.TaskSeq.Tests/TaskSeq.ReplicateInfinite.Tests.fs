@@ -10,8 +10,8 @@ open Microsoft.FSharp.Control.AsyncSeq2Implementation
 
 //
 // AsyncSeq2.replicateInfinite
-// TaskCallbacks.replicateInfiniteAsync
-// TaskCallbacks.replicateUntilNoneAsync
+// AsyncSeq2.replicateInfiniteAsync
+// AsyncSeq2.replicateUntilNoneAsync
 //
 
 module ReplicateInfinite =
@@ -66,13 +66,13 @@ module ReplicateInfiniteAsync =
     let ``AsyncSeq2-replicateInfiniteAsync yields computed value indefinitely`` () = task {
         let mutable n = 0
 
-        let comp () = task {
+        let comp () = async2 {
             n <- n + 1
             return n
         }
 
         let! arr =
-            TaskCallbacks.replicateInfiniteAsync comp
+            AsyncSeq2.replicateInfiniteAsync comp
             |> AsyncSeq2.take 4
             |> ColdTask.toArrayAsync
 
@@ -81,18 +81,18 @@ module ReplicateInfiniteAsync =
 
     [<Fact>]
     let ``AsyncSeq2-replicateInfiniteAsync with take 0 gives empty`` () =
-        let comp () = Task.fromResult 99
+        let comp () = async2 { return 99 }
 
-        TaskCallbacks.replicateInfiniteAsync comp
+        AsyncSeq2.replicateInfiniteAsync comp
         |> AsyncSeq2.take 0
         |> verifyEmpty
 
     [<Fact>]
     let ``AsyncSeq2-replicateInfiniteAsync constant computation`` () = task {
-        let comp () = Task.fromResult "hello"
+        let comp () = async2 { return "hello" }
 
         let! arr =
-            TaskCallbacks.replicateInfiniteAsync comp
+            AsyncSeq2.replicateInfiniteAsync comp
             |> AsyncSeq2.take 3
             |> ColdTask.toArrayAsync
 
@@ -105,20 +105,20 @@ module ReplicateUntilNoneAsync =
     let ``AsyncSeq2-replicateUntilNoneAsync stops on None`` () = task {
         let mutable n = 0
 
-        let comp () = task {
+        let comp () = async2 {
             n <- n + 1
 
             if n <= 3 then return Some n else return None
         }
 
-        let! arr = TaskCallbacks.replicateUntilNoneAsync comp |> ColdTask.toArrayAsync
+        let! arr = AsyncSeq2.replicateUntilNoneAsync comp |> ColdTask.toArrayAsync
         arr |> should equal [| 1; 2; 3 |]
     }
 
     [<Fact>]
     let ``AsyncSeq2-replicateUntilNoneAsync returns empty when first call is None`` () = task {
-        let comp () = Task.fromResult None
-        let ts = TaskCallbacks.replicateUntilNoneAsync comp
+        let comp () = async2 { return None }
+        let ts = AsyncSeq2.replicateUntilNoneAsync comp
         let! arr = ts |> ColdTask.toArrayAsync
         arr |> should haveLength 0
     }
@@ -127,7 +127,7 @@ module ReplicateUntilNoneAsync =
     let ``AsyncSeq2-replicateUntilNoneAsync yields single element`` () = task {
         let mutable called = false
 
-        let comp () = task {
+        let comp () = async2 {
             if not called then
                 called <- true
                 return Some 42
@@ -135,7 +135,7 @@ module ReplicateUntilNoneAsync =
                 return None
         }
 
-        let! arr = TaskCallbacks.replicateUntilNoneAsync comp |> ColdTask.toArrayAsync
+        let! arr = AsyncSeq2.replicateUntilNoneAsync comp |> ColdTask.toArrayAsync
         arr |> should equal [| 42 |]
     }
 
@@ -144,7 +144,7 @@ module ReplicateUntilNoneAsync =
         let count = 100
         let mutable i = 0
 
-        let comp () = task {
+        let comp () = async2 {
             if i < count then
                 i <- i + 1
                 return Some i
@@ -152,7 +152,7 @@ module ReplicateUntilNoneAsync =
                 return None
         }
 
-        let! arr = TaskCallbacks.replicateUntilNoneAsync comp |> ColdTask.toArrayAsync
+        let! arr = AsyncSeq2.replicateUntilNoneAsync comp |> ColdTask.toArrayAsync
         arr |> should haveLength count
         arr[0] |> should equal 1
         arr[count - 1] |> should equal count

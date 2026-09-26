@@ -41,13 +41,13 @@ module EmptySeq =
     [<Fact>]
     let ``AsyncSeq2-distinctUntilChangedWithAsync with null source raises`` () =
         assertNullArg
-        <| fun () -> TaskCallbacks.distinctUntilChangedWithAsync (fun _ _ -> task { return false }) null
+        <| fun () -> AsyncSeq2.distinctUntilChangedWithAsync (fun _ _ -> async2 { return false }) null
 
     [<Theory; ClassData(typeof<TestEmptyVariants>)>]
     let ``AsyncSeq2-distinctUntilChangedWithAsync has no effect on empty`` variant = task {
         do!
             Gen.getEmptyVariant variant
-            |> TaskCallbacks.distinctUntilChangedWithAsync (fun _ _ -> task { return false })
+            |> AsyncSeq2.distinctUntilChangedWithAsync (fun _ _ -> async2 { return false })
             |> ColdTask.toListAsync
             |> Task.map (List.isEmpty >> should be True)
     }
@@ -197,7 +197,7 @@ module Functionality =
 
         let! xs =
             ts
-            |> TaskCallbacks.distinctUntilChangedWithAsync (fun a b -> task { return a = b })
+            |> AsyncSeq2.distinctUntilChangedWithAsync (fun a b -> async2 { return a = b })
             |> ColdTask.toListAsync
 
         xs |> should equal [ 1; 2; 3; 4 ]
@@ -207,7 +207,7 @@ module Functionality =
     let ``AsyncSeq2-distinctUntilChangedWithAsync with always-true async comparer returns only first element`` () = task {
         let! xs =
             asyncSeq2 { yield! [ 10; 20; 30 ] }
-            |> TaskCallbacks.distinctUntilChangedWithAsync (fun _ _ -> task { return true })
+            |> AsyncSeq2.distinctUntilChangedWithAsync (fun _ _ -> async2 { return true })
             |> ColdTask.toListAsync
 
         xs |> should equal [ 10 ]
@@ -217,7 +217,7 @@ module Functionality =
     let ``AsyncSeq2-distinctUntilChangedWithAsync with always-false async comparer returns all elements`` () = task {
         let! xs =
             asyncSeq2 { yield! [ 5; 5; 5 ] }
-            |> TaskCallbacks.distinctUntilChangedWithAsync (fun _ _ -> task { return false })
+            |> AsyncSeq2.distinctUntilChangedWithAsync (fun _ _ -> async2 { return false })
             |> ColdTask.toListAsync
 
         xs |> should equal [ 5; 5; 5 ]
@@ -227,14 +227,14 @@ module Functionality =
     let ``AsyncSeq2-distinctUntilChangedWithAsync can perform async work in comparer`` () = task {
         let mutable comparerCallCount = 0
 
-        let asyncComparer a b = task {
+        let asyncComparer a b = async2 {
             comparerCallCount <- comparerCallCount + 1
             return a = b
         }
 
         let! xs =
             asyncSeq2 { yield! [ 1; 1; 2; 2; 3 ] }
-            |> TaskCallbacks.distinctUntilChangedWithAsync asyncComparer
+            |> AsyncSeq2.distinctUntilChangedWithAsync asyncComparer
             |> ColdTask.toListAsync
 
         xs |> should equal [ 1; 2; 3 ]
@@ -316,7 +316,7 @@ module SideEffects =
 
         let! xs =
             ts
-            |> TaskCallbacks.distinctUntilChangedWithAsync (fun a b -> task { return a = b })
+            |> AsyncSeq2.distinctUntilChangedWithAsync (fun a b -> async2 { return a = b })
             |> ColdTask.toListAsync
 
         count |> should equal 5

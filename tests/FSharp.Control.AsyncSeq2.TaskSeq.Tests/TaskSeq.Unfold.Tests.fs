@@ -8,7 +8,7 @@ open Microsoft.FSharp.Control.AsyncSeq2Implementation
 
 //
 // AsyncSeq2.unfold
-// TaskCallbacks.unfoldAsync
+// AsyncSeq2.unfoldAsync
 //
 
 module EmptySeq =
@@ -22,7 +22,7 @@ module EmptySeq =
     [<Fact>]
     let ``AsyncSeq2-unfoldAsync generator returning None immediately yields empty sequence`` () = task {
         let! result =
-            TaskCallbacks.unfoldAsync (fun _ -> task { return None }) 0
+            AsyncSeq2.unfoldAsync (fun _ -> async2 { return None }) 0
             |> ColdTask.toArrayAsync
 
         result |> should be Empty
@@ -42,7 +42,7 @@ module Functionality =
     [<Fact>]
     let ``AsyncSeq2-unfoldAsync generates a finite sequence`` () = task {
         let! result =
-            TaskCallbacks.unfoldAsync (fun n -> task { return if n < 10 then Some(n, n + 1) else None }) 0
+            AsyncSeq2.unfoldAsync (fun n -> async2 { return if n < 10 then Some(n, n + 1) else None }) 0
             |> ColdTask.toArrayAsync
 
         result |> should equal [| 0..9 |]
@@ -60,7 +60,7 @@ module Functionality =
     [<Fact>]
     let ``AsyncSeq2-unfoldAsync generates a singleton sequence`` () = task {
         let! result =
-            TaskCallbacks.unfoldAsync (fun s -> task { return if s = 0 then Some(42, 1) else None }) 0
+            AsyncSeq2.unfoldAsync (fun s -> async2 { return if s = 0 then Some(42, 1) else None }) 0
             |> ColdTask.toArrayAsync
 
         result |> should equal [| 42 |]
@@ -80,7 +80,7 @@ module Functionality =
     [<Fact>]
     let ``AsyncSeq2-unfoldAsync uses state correctly to thread accumulator`` () = task {
         let! fibs =
-            TaskCallbacks.unfoldAsync (fun (a, b) -> task { return if a > 100 then None else Some(a, (b, a + b)) }) (1, 1)
+            AsyncSeq2.unfoldAsync (fun (a, b) -> async2 { return if a > 100 then None else Some(a, (b, a + b)) }) (1, 1)
             |> ColdTask.toArrayAsync
 
         fibs
@@ -102,7 +102,7 @@ module Functionality =
     [<Fact>]
     let ``AsyncSeq2-unfoldAsync can be truncated to limit infinite-like sequences`` () = task {
         let! result =
-            TaskCallbacks.unfoldAsync (fun n -> task { return Some(n, n + 1) }) 1
+            AsyncSeq2.unfoldAsync (fun n -> async2 { return Some(n, n + 1) }) 1
             |> AsyncSeq2.take 100
             |> ColdTask.toArrayAsync
 
@@ -151,7 +151,7 @@ module Functionality =
 
     [<Fact>]
     let ``AsyncSeq2-unfoldAsync re-iterating restarts from initial state`` () = task {
-        let ts = TaskCallbacks.unfoldAsync (fun n -> task { return if n < 5 then Some(n, n + 1) else None }) 0
+        let ts = AsyncSeq2.unfoldAsync (fun n -> async2 { return if n < 5 then Some(n, n + 1) else None }) 0
 
         let! first = ts |> ColdTask.toArrayAsync
         let! second = ts |> ColdTask.toArrayAsync
@@ -189,8 +189,8 @@ module SideEffects =
         let mutable totalCalls = 0
 
         let ts =
-            TaskCallbacks.unfoldAsync
-                (fun n -> task {
+            AsyncSeq2.unfoldAsync
+                (fun n -> async2 {
                     totalCalls <- totalCalls + 1
                     return if n < 3 then Some(n, n + 1) else None
                 })
@@ -230,8 +230,8 @@ module SideEffects =
         let mutable callCount = 0
 
         let ts =
-            TaskCallbacks.unfoldAsync
-                (fun n -> task {
+            AsyncSeq2.unfoldAsync
+                (fun n -> async2 {
                     callCount <- callCount + 1
                     return Some(n, n + 1)
                 })
@@ -259,8 +259,8 @@ module SideEffects =
     [<Fact>]
     let ``AsyncSeq2-unfoldAsync propagates exception thrown inside the async generator`` () =
         let ts =
-            TaskCallbacks.unfoldAsync
-                (fun n -> task {
+            AsyncSeq2.unfoldAsync
+                (fun n -> async2 {
                     if n = 3 then
                         failwith "async-generator-boom"
 

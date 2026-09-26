@@ -1,6 +1,7 @@
 module AsyncSeq2.Tests.AsyncExtensions
 
 open System
+open System.Threading
 open Xunit
 open FsUnit.Xunit
 
@@ -10,6 +11,32 @@ open Microsoft.FSharp.Control.AsyncSeq2Implementation
 //
 // Async extensions
 //
+
+module Async2Extensions =
+    [<Theory; ClassData(typeof<TestImmTaskSeq>)>]
+    let ``Async2-for CE consumes asyncSeq2`` variant =
+        async2 {
+            let mutable sum = 0
+            for value in Gen.getSeqImmutable variant do
+                sum <- sum + value
+            return sum
+        }
+        |> Async2.StartAsTask
+        |> Task.map (should equal 55)
+
+    [<Fact>]
+    let ``Async2-for CE forwards cancellation to asyncSeq2`` () = task {
+        use cts = new CancellationTokenSource()
+        let source = asyncSeq2 {
+            let! token = Async2.CancellationToken
+            yield token
+        }
+        let computation = async2 {
+            for token in source do
+                token |> should equal cts.Token
+        }
+        do! Async2.StartAsTask(computation, cancellationToken = cts.Token)
+    }
 
 module EmptySeq =
     [<Theory; ClassData(typeof<TestEmptyVariants>)>]

@@ -8,9 +8,9 @@ open Microsoft.FSharp.Control.AsyncSeq2Implementation
 
 //
 // AsyncSeq2.takeWhile
-// TaskCallbacks.takeWhileAsync
+// AsyncSeq2.takeWhileAsync
 // AsyncSeq2.takeWhileInclusive
-// TaskCallbacks.takeWhileInclusiveAsync
+// AsyncSeq2.takeWhileInclusiveAsync
 //
 
 [<AutoOpen>]
@@ -20,9 +20,9 @@ module With =
     let getFunction inclusive isAsync =
         match inclusive, isAsync with
         | false, false -> AsyncSeq2.takeWhile
-        | false, true -> fun pred -> TaskCallbacks.takeWhileAsync (pred >> Task.fromResult)
+        | false, true -> fun pred -> AsyncSeq2.takeWhileAsync (fun value -> async2 { return pred value })
         | true, false -> AsyncSeq2.takeWhileInclusive
-        | true, true -> fun pred -> TaskCallbacks.takeWhileInclusiveAsync (pred >> Task.fromResult)
+        | true, true -> fun pred -> AsyncSeq2.takeWhileInclusiveAsync (fun value -> async2 { return pred value })
 
     /// This is the base condition as one would expect in actual code
     let inline cond x = x <> 6
@@ -51,7 +51,7 @@ module EmptySeq =
 
         do!
             Gen.getEmptyVariant variant
-            |> TaskCallbacks.takeWhileAsync ((=) 12 >> Task.fromResult)
+            |> AsyncSeq2.takeWhileAsync (fun x -> async2 { return x = 12 })
             |> verifyEmpty
     }
 
@@ -64,7 +64,7 @@ module EmptySeq =
 
         do!
             Gen.getEmptyVariant variant
-            |> TaskCallbacks.takeWhileInclusiveAsync ((=) 12 >> Task.fromResult)
+            |> AsyncSeq2.takeWhileInclusiveAsync (fun x -> async2 { return x = 12 })
             |> verifyEmpty
     }
 
@@ -82,7 +82,7 @@ module Immutable =
 
         do!
             Gen.getSeqImmutable variant
-            |> TaskCallbacks.takeWhileAsync (fun x -> task { return condWithGuard x })
+            |> AsyncSeq2.takeWhileAsync (fun x -> async2 { return condWithGuard x })
             |> verifyDigitsAsString "ABCDE"
     }
 
@@ -95,7 +95,7 @@ module Immutable =
 
         do!
             Gen.getSeqImmutable variant
-            |> TaskCallbacks.takeWhileAsync ((=) 0 >> Task.fromResult)
+            |> AsyncSeq2.takeWhileAsync (fun x -> async2 { return x = 0 })
             |> verifyDigitsAsString ""
     }
 
@@ -108,7 +108,7 @@ module Immutable =
 
         do!
             Gen.getSeqImmutable variant
-            |> TaskCallbacks.takeWhileInclusiveAsync (fun x -> task { return condWithGuard x })
+            |> AsyncSeq2.takeWhileInclusiveAsync (fun x -> async2 { return condWithGuard x })
             |> verifyDigitsAsString "ABCDEF"
     }
 
@@ -121,7 +121,7 @@ module Immutable =
 
         do!
             Gen.getSeqImmutable variant
-            |> TaskCallbacks.takeWhileInclusiveAsync ((=) 0 >> Task.fromResult)
+            |> AsyncSeq2.takeWhileInclusiveAsync (fun x -> async2 { return x = 0 })
             |> verifyDigitsAsString "A"
     }
 
@@ -135,7 +135,7 @@ module SideEffects =
 
         do!
             Gen.getSeqWithSideEffect variant
-            |> TaskCallbacks.takeWhileAsync (fun x -> task { return condWithGuard x })
+            |> AsyncSeq2.takeWhileAsync (fun x -> async2 { return condWithGuard x })
             |> verifyDigitsAsString "ABCDE"
     }
 
@@ -148,7 +148,7 @@ module SideEffects =
 
         do!
             Gen.getSeqWithSideEffect variant
-            |> TaskCallbacks.takeWhileInclusiveAsync (fun x -> task { return condWithGuard x })
+            |> AsyncSeq2.takeWhileInclusiveAsync (fun x -> async2 { return condWithGuard x })
             |> verifyDigitsAsString "ABCDEF"
     }
 
@@ -232,7 +232,7 @@ module SideEffects =
         let ts = Gen.getSeqWithSideEffect variant
 
         let! first =
-            TaskCallbacks.takeWhileInclusiveAsync (fun x -> task { return x < 5 }) ts
+            AsyncSeq2.takeWhileInclusiveAsync (fun x -> async2 { return x < 5 }) ts
             |> ColdTask.toArrayAsync
 
         let expected = [| 1..5 |]
@@ -241,7 +241,7 @@ module SideEffects =
         // side effect, reiterating causes it to resume from where we left it (minus the failing item)
         // which means the original sequence has now changed due to the side effect
         let! repeat =
-            TaskCallbacks.takeWhileInclusiveAsync (fun x -> task { return x < 5 }) ts
+            AsyncSeq2.takeWhileInclusiveAsync (fun x -> async2 { return x < 5 }) ts
             |> ColdTask.toArrayAsync
 
         repeat |> should not' (equal expected)

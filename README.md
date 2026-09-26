@@ -49,4 +49,7 @@ let result = AsyncSeq2.toArray values |> Async2.RunSynchronously
 `FSharp.Control.AsyncSeq2.Tests` contains xUnit v3/MTP builder, AsyncSeq
 operator, cleanup, composition, and cancellation tests.
 `FSharp.Control.AsyncSeq2.TaskSeq.Tests` ports all 74 non-smoke TaskSeq test
-files (including two upstream-skipped cases) to xUnit v3/MTP.
+files (including two upstream-skipped cases) to xUnit v3/MTP. Transformation
+tests call `AsyncSeq2` directly with native `async2` callbacks; xUnit test
+boundaries and explicit `Async`, `Task`, and `ValueTask` interoperability
+tests retain those carriers.

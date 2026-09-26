@@ -8,9 +8,9 @@ open Microsoft.FSharp.Control.AsyncSeq2Implementation
 
 //
 // AsyncSeq2.filter
-// TaskCallbacks.filterAsync
+// AsyncSeq2.filterAsync
 // AsyncSeq2.where
-// TaskCallbacks.whereAsync
+// AsyncSeq2.whereAsync
 //
 
 
@@ -21,13 +21,13 @@ module EmptySeq =
         <| fun () -> AsyncSeq2.filter (fun _ -> false) null
 
         assertNullArg
-        <| fun () -> TaskCallbacks.filterAsync (fun _ -> Task.fromResult false) null
+        <| fun () -> AsyncSeq2.filterAsync (fun _ -> async2 { return false }) null
 
         assertNullArg
         <| fun () -> AsyncSeq2.where (fun _ -> false) null
 
         assertNullArg
-        <| fun () -> TaskCallbacks.whereAsync (fun _ -> Task.fromResult false) null
+        <| fun () -> AsyncSeq2.whereAsync (fun _ -> async2 { return false }) null
 
 
     [<Theory; ClassData(typeof<TestEmptyVariants>)>]
@@ -49,13 +49,13 @@ module EmptySeq =
     let ``AsyncSeq2-filterAsync or whereAsync has no effect`` variant = task {
         do!
             Gen.getEmptyVariant variant
-            |> TaskCallbacks.filterAsync (fun x -> task { return x = 12 })
+            |> AsyncSeq2.filterAsync (fun x -> async2 { return x = 12 })
             |> ColdTask.toListAsync
             |> Task.map (List.isEmpty >> should be True)
 
         do!
             Gen.getEmptyVariant variant
-            |> TaskCallbacks.whereAsync (fun x -> task { return x = 12 })
+            |> AsyncSeq2.whereAsync (fun x -> async2 { return x = 12 })
             |> ColdTask.toListAsync
             |> Task.map (List.isEmpty >> should be True)
     }
@@ -78,12 +78,12 @@ module Immutable =
     let ``AsyncSeq2-filterAsync or whereAsync filters correctly`` variant = task {
         do!
             Gen.getSeqImmutable variant
-            |> TaskCallbacks.filterAsync (fun x -> task { return x <= 5 })
+            |> AsyncSeq2.filterAsync (fun x -> async2 { return x <= 5 })
             |> verifyDigitsAsString "ABCDE"
 
         do!
             Gen.getSeqImmutable variant
-            |> TaskCallbacks.whereAsync (fun x -> task { return x > 5 })
+            |> AsyncSeq2.whereAsync (fun x -> async2 { return x > 5 })
             |> verifyDigitsAsString "FGHIJ"
 
     }
@@ -98,7 +98,7 @@ module Immutable2 =
     [<Theory; ClassData(typeof<TestImmTaskSeq>)>]
     let ``AsyncSeq2-filterAsync keeps all when predicate is always true`` variant =
         Gen.getSeqImmutable variant
-        |> TaskCallbacks.filterAsync (fun _ -> Task.fromResult true)
+        |> AsyncSeq2.filterAsync (fun _ -> async2 { return true })
         |> verify1To10
 
     [<Theory; ClassData(typeof<TestImmTaskSeq>)>]
@@ -110,7 +110,7 @@ module Immutable2 =
     [<Theory; ClassData(typeof<TestImmTaskSeq>)>]
     let ``AsyncSeq2-filterAsync returns empty when predicate is always false`` variant =
         Gen.getSeqImmutable variant
-        |> TaskCallbacks.filterAsync (fun _ -> Task.fromResult false)
+        |> AsyncSeq2.filterAsync (fun _ -> async2 { return false })
         |> verifyEmpty
 
     [<Fact>]
@@ -150,11 +150,11 @@ module SideEffects =
     let ``AsyncSeq2-filterAsync filters correctly`` variant = task {
         do!
             Gen.getSeqWithSideEffect variant
-            |> TaskCallbacks.filterAsync (fun x -> task { return x <= 5 })
+            |> AsyncSeq2.filterAsync (fun x -> async2 { return x <= 5 })
             |> verifyDigitsAsString "ABCDE"
 
         do!
             Gen.getSeqWithSideEffect variant
-            |> TaskCallbacks.whereAsync (fun x -> task { return x > 5 && x < 9 })
+            |> AsyncSeq2.whereAsync (fun x -> async2 { return x > 5 && x < 9 })
             |> verifyDigitsAsString "FGH"
     }

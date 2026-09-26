@@ -11,8 +11,8 @@ open Microsoft.FSharp.Control.AsyncSeq2Implementation
 //
 // AsyncSeq2.init
 // AsyncSeq2.initInfinite
-// TaskCallbacks.initAsync
-// TaskCallbacks.initInfiniteAsync
+// AsyncSeq2.initAsync
+// AsyncSeq2.initInfiniteAsync
 //
 
 /// Asserts that a sequence contains the char values 'A'..'J'.
@@ -23,7 +23,7 @@ module EmptySeq =
 
     [<Fact>]
     let ``AsyncSeq2-initAsync can generate an empty sequence`` () =
-        TaskCallbacks.initAsync 0 (fun x -> Task.fromResult x)
+        AsyncSeq2.initAsync 0 (fun x -> async2 { return x })
         |> verifyEmpty
 
     [<Fact>]
@@ -45,7 +45,7 @@ module EmptySeq =
     [<Fact>]
     let ``AsyncSeq2-initAsync with a negative count gives an error`` () =
         fun () ->
-            TaskCallbacks.initAsync Int32.MinValue (fun x -> Task.fromResult x)
+            AsyncSeq2.initAsync Int32.MinValue (fun x -> async2 { return x })
             |> ColdTask.toArrayAsync
             |> Task.ignore
 
@@ -60,7 +60,7 @@ module Immutable =
 
     [<Fact>]
     let ``AsyncSeq2-initAsync singleton`` () =
-        TaskCallbacks.initAsync 1 (id >> Task.fromResult)
+        AsyncSeq2.initAsync 1 (fun x -> async2 { return x })
         |> ColdTask.head
         |> Task.map (should equal 0)
 
@@ -72,7 +72,7 @@ module Immutable =
 
     [<Fact>]
     let ``AsyncSeq2-initAsync some values`` () =
-        AsyncSeq2.init 42 (fun x -> Task.fromResult (x / 2))
+        AsyncSeq2.initAsync 42 (fun x -> async2 { return x / 2 })
         |> AsyncSeq2.length |> Async2.StartAsTask
         |> Task.map (should equal 42)
 
@@ -84,7 +84,7 @@ module Immutable =
 
     [<Fact>]
     let ``AsyncSeq2-initInfiniteAsync`` () =
-        TaskCallbacks.initInfiniteAsync (fun x -> Task.fromResult (x / 2))
+        AsyncSeq2.initInfiniteAsync (fun x -> async2 { return x / 2 })
         |> ColdTask.item 1_000_001
         |> Task.map (should equal 500_000)
 
@@ -121,7 +121,7 @@ module SideEffects =
     let ``AsyncSeq2-initAsync singleton with side effects`` () = task {
         let mutable x = 0
 
-        let ts = TaskCallbacks.initAsync 1 (fun _ -> Task.fromResult (inc &x))
+        let ts = AsyncSeq2.initAsync 1 (fun _ -> async2 { return inc &x })
 
         do! ColdTask.head ts |> Task.map (should equal 1)
         do! ColdTask.head ts |> Task.map (should equal 2)
@@ -132,7 +132,7 @@ module SideEffects =
     let ``AsyncSeq2-initAsync singleton with side effects -- Current`` () = task {
         let mutable x = 0
 
-        let ts = TaskCallbacks.initAsync 1 (fun _ -> Task.fromResult (inc &x))
+        let ts = AsyncSeq2.initAsync 1 (fun _ -> async2 { return inc &x })
 
         let enumerator = ts.GetAsyncEnumerator()
         let! _ = enumerator.MoveNextAsync()

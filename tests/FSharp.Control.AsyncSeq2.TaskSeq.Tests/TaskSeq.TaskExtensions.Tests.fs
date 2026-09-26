@@ -67,7 +67,7 @@ module Immutable =
     }
 
     [<Fact>]
-    let ``Task-for mixing both types of for loops`` () = async {
+    let ``Task-for mixing both types of for loops`` () = task {
         // this test ensures overload resolution is correct
         let ts = AsyncSeq2.singleton 20
         let sq = Seq.singleton 20
@@ -117,7 +117,7 @@ module SideEffects =
 
 module Other =
     [<Fact>]
-    let ``Task-for CE must call dispose in empty asyncSeq2`` () = async {
+    let ``Task-for CE must call dispose in empty asyncSeq2`` () = task {
         let disposed = ref 0
         let values = Gen.getEmptyDisposableTaskSeq disposed
 
@@ -129,7 +129,7 @@ module Other =
     }
 
     [<Fact>]
-    let ``Task-for CE must call dispose on singleton`` () = async {
+    let ``Task-for CE must call dispose on singleton`` () = task {
         let disposed = ref 0
         let mutable sum = 0
         let values = Gen.getSingletonDisposableTaskSeq disposed

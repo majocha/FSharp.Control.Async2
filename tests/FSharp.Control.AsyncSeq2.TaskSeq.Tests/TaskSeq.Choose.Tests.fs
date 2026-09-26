@@ -10,7 +10,7 @@ open Microsoft.FSharp.Control.AsyncSeq2Implementation
 
 //
 // AsyncSeq2.choose
-// TaskCallbacks.chooseAsync
+// AsyncSeq2.chooseAsync
 //
 
 module EmptySeq =
@@ -20,7 +20,7 @@ module EmptySeq =
         <| fun () -> AsyncSeq2.choose (fun _ -> None) null
 
         assertNullArg
-        <| fun () -> TaskCallbacks.chooseAsync (fun _ -> Task.fromResult None) null
+        <| fun () -> AsyncSeq2.chooseAsync (fun _ -> async2 { return None }) null
 
     [<Theory; ClassData(typeof<TestEmptyVariants>)>]
     let ``AsyncSeq2-choose`` variant = task {
@@ -36,7 +36,7 @@ module EmptySeq =
     let ``AsyncSeq2-chooseAsync`` variant = task {
         let! empty =
             Gen.getEmptyVariant variant
-            |> TaskCallbacks.chooseAsync (fun _ -> task { return Some 42 })
+            |> AsyncSeq2.chooseAsync (fun _ -> async2 { return Some 42 })
             |> ColdTask.toListAsync
 
         List.isEmpty empty |> should be True
@@ -57,11 +57,11 @@ module Immutable =
 
     [<Theory; ClassData(typeof<TestImmTaskSeq>)>]
     let ``AsyncSeq2-chooseAsync can convert and filter`` variant = task {
-        let chooser number = task { return if number <= 5 then Some(char number + '@') else None }
+        let chooser number = async2 { return if number <= 5 then Some(char number + '@') else None }
         let ts = Gen.getSeqImmutable variant
 
-        let! letters1 = TaskCallbacks.chooseAsync chooser ts |> ColdTask.toArrayAsync
-        let! letters2 = TaskCallbacks.chooseAsync chooser ts |> ColdTask.toArrayAsync
+        let! letters1 = AsyncSeq2.chooseAsync chooser ts |> ColdTask.toArrayAsync
+        let! letters2 = AsyncSeq2.chooseAsync chooser ts |> ColdTask.toArrayAsync
 
         String letters1 |> should equal "ABCDE"
         String letters2 |> should equal "ABCDE"
@@ -81,7 +81,7 @@ module Immutable2 =
 
         let! xs =
             ts
-            |> TaskCallbacks.chooseAsync (fun x -> task { return Some x })
+            |> AsyncSeq2.chooseAsync (fun x -> async2 { return Some x })
             |> ColdTask.toArrayAsync
 
         xs |> should equal [| 1..10 |]
@@ -100,7 +100,7 @@ module Immutable2 =
 
         do!
             ts
-            |> TaskCallbacks.chooseAsync (fun _ -> task { return None })
+            |> AsyncSeq2.chooseAsync (fun _ -> async2 { return None })
             |> verifyEmpty
     }
 
@@ -135,11 +135,11 @@ module Immutable2 =
 
     [<Fact>]
     let ``AsyncSeq2-chooseAsync can change the element type`` () = task {
-        let chooser n = task { return if n % 2 = 0 then Some(sprintf "even-%d" n) else None }
+        let chooser n = async2 { return if n % 2 = 0 then Some(sprintf "even-%d" n) else None }
 
         let! xs =
             asyncSeq2 { yield! [ 1..6 ] }
-            |> TaskCallbacks.chooseAsync chooser
+            |> AsyncSeq2.chooseAsync chooser
             |> ColdTask.toListAsync
 
         xs |> should equal [ "even-2"; "even-4"; "even-6" ]
@@ -163,11 +163,11 @@ module SideEffects =
     [<Theory; ClassData(typeof<TestSideEffectTaskSeq>)>]
     let ``AsyncSeq2-chooseAsync applied multiple times`` variant = task {
         let ts = Gen.getSeqWithSideEffect variant
-        let chooser x number = task { return if number <= x then Some(char number + '@') else None }
+        let chooser x number = async2 { return if number <= x then Some(char number + '@') else None }
 
-        let! lettersA = TaskCallbacks.chooseAsync (chooser 5) ts |> ColdTask.toArrayAsync
-        let! lettersK = TaskCallbacks.chooseAsync (chooser 15) ts |> ColdTask.toArrayAsync
-        let! lettersU = TaskCallbacks.chooseAsync (chooser 25) ts |> ColdTask.toArrayAsync
+        let! lettersA = AsyncSeq2.chooseAsync (chooser 5) ts |> ColdTask.toArrayAsync
+        let! lettersK = AsyncSeq2.chooseAsync (chooser 15) ts |> ColdTask.toArrayAsync
+        let! lettersU = AsyncSeq2.chooseAsync (chooser 25) ts |> ColdTask.toArrayAsync
 
         String lettersA |> should equal "ABCDE"
         String lettersK |> should equal "KLMNO"
@@ -205,7 +205,7 @@ module SideEffects =
 
         let! xs =
             ts
-            |> TaskCallbacks.chooseAsync (fun x -> task { return if x < 3 then Some x else None })
+            |> AsyncSeq2.chooseAsync (fun x -> async2 { return if x < 3 then Some x else None })
             |> ColdTask.toListAsync
 
         count |> should equal 5

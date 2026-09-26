@@ -8,7 +8,7 @@ open Microsoft.FSharp.Control.AsyncSeq2Implementation
 
 //
 // AsyncSeq2.collect
-// TaskCallbacks.collectAsync
+// AsyncSeq2.collectAsync
 //
 
 module EmptySeq =
@@ -18,7 +18,7 @@ module EmptySeq =
         <| fun () -> AsyncSeq2.collect (fun _ -> (AsyncSeq2.empty ())) null
 
         assertNullArg
-        <| fun () -> TaskCallbacks.collectAsync (fun _ -> Task.fromResult (AsyncSeq2.empty ())) null
+        <| fun () -> AsyncSeq2.collectAsync (fun _ -> async2 { return AsyncSeq2.empty () }) null
 
     [<Theory; ClassData(typeof<TestEmptyVariants>)>]
     let ``AsyncSeq2-collect collecting emptiness`` variant =
@@ -48,25 +48,25 @@ module EmptySeq =
     [<Theory; ClassData(typeof<TestEmptyVariants>)>]
     let ``AsyncSeq2-collectAsync collecting emptiness`` variant =
         Gen.sideEffectTaskSeq 10
-        |> TaskCallbacks.collectAsync (fun _ -> task { return Gen.getEmptyVariant variant })
+        |> AsyncSeq2.collectAsync (fun _ -> async2 { return Gen.getEmptyVariant variant })
         |> verifyEmpty
 
     [<Theory; ClassData(typeof<TestImmTaskSeq>)>]
     let ``AsyncSeq2-collectAsync collecting emptiness v2`` variant =
         Gen.getSeqImmutable variant
-        |> TaskCallbacks.collectAsync (fun _ -> task { return Gen.getEmptyVariant EmptyVariant.DelayDoBang })
+        |> AsyncSeq2.collectAsync (fun _ -> async2 { return Gen.getEmptyVariant EmptyVariant.DelayDoBang })
         |> verifyEmpty
 
     [<Theory; ClassData(typeof<TestEmptyVariants>)>]
     let ``AsyncSeq2-collectAsync collecting emptiness from emptiness`` variant =
         Gen.getEmptyVariant variant
-        |> TaskCallbacks.collectAsync (fun _ -> task { return Gen.getEmptyVariant variant })
+        |> AsyncSeq2.collectAsync (fun _ -> async2 { return Gen.getEmptyVariant variant })
         |> verifyEmpty
 
     [<Theory; ClassData(typeof<TestEmptyVariants>)>]
     let ``AsyncSeq2-collectAsync collecting non-empty sequences on an empty sequence`` variant =
         Gen.getEmptyVariant variant
-        |> TaskCallbacks.collectAsync (fun _ -> task { return asyncSeq2 { yield 10 } })
+        |> AsyncSeq2.collectAsync (fun _ -> async2 { return asyncSeq2 { yield 10 } })
         |> verifyEmpty
 
     [<Theory; ClassData(typeof<TestSideEffectTaskSeq>)>]
@@ -90,19 +90,19 @@ module EmptySeq =
     [<Theory; ClassData(typeof<TestImmTaskSeq>)>]
     let ``AsyncSeq2-collectSeqAsync collecting emptiness`` variant =
         Gen.getSeqImmutable variant
-        |> TaskCallbacks.collectSeqAsync (fun _ -> task { return Array.empty<int> })
+        |> AsyncSeq2.collectSeqAsync (fun _ -> async2 { return Array.empty<int> })
         |> verifyEmpty
 
     [<Theory; ClassData(typeof<TestEmptyVariants>)>]
     let ``AsyncSeq2-collectSeqAsync collecting emptiness from emptiness`` variant =
         Gen.getEmptyVariant variant
-        |> TaskCallbacks.collectSeqAsync (fun _ -> task { return Array.empty<int> })
+        |> AsyncSeq2.collectSeqAsync (fun _ -> async2 { return Array.empty<int> })
         |> verifyEmpty
 
     [<Theory; ClassData(typeof<TestEmptyVariants>)>]
     let ``AsyncSeq2-collectSeqAsync collecting non-empty sequences on an empty sequence`` variant =
         Gen.getEmptyVariant variant
-        |> TaskCallbacks.collectSeqAsync (fun _ -> task { return [ 10 ] })
+        |> AsyncSeq2.collectSeqAsync (fun _ -> async2 { return [ 10 ] })
         |> verifyEmpty
 
 module Immutable =
@@ -126,7 +126,7 @@ module Immutable =
     [<Theory; ClassData(typeof<TestImmTaskSeq>)>]
     let ``AsyncSeq2-collectAsync operates in correct order`` variant =
         Gen.getSeqImmutable variant
-        |> TaskCallbacks.collectAsync (fun item -> task {
+        |> AsyncSeq2.collectAsync (fun item -> async2 {
             return asyncSeq2 {
                 yield char (item + 64)
                 yield char (item + 65)
@@ -152,7 +152,7 @@ module Immutable =
     [<Theory; ClassData(typeof<TestImmTaskSeq>)>]
     let ``AsyncSeq2-collectSeqAsync operates in correct order`` variant =
         Gen.getSeqImmutable variant
-        |> TaskCallbacks.collectSeqAsync (fun item -> task {
+        |> AsyncSeq2.collectSeqAsync (fun item -> async2 {
             return seq {
                 yield char (item + 64)
                 yield char (item + 65)
@@ -163,7 +163,7 @@ module Immutable =
     [<Theory; ClassData(typeof<TestImmTaskSeq>)>]
     let ``AsyncSeq2-collectSeqAsync with arrays operates in correct order`` variant =
         Gen.getSeqImmutable variant
-        |> TaskCallbacks.collectSeqAsync (fun item -> task { return [| char (item + 64); char (item + 65) |] })
+        |> AsyncSeq2.collectSeqAsync (fun item -> async2 { return [| char (item + 64); char (item + 65) |] })
         |> validateSequence
 
 module SideEffects =
@@ -202,9 +202,9 @@ module SideEffects =
         // point of this test: just calling 'map' won't execute anything of the sequence!
         let _ =
             ts
-            |> TaskCallbacks.collectAsync (fun _ -> task { return asyncSeq2 { yield 10 } })
-            |> TaskCallbacks.collectAsync (fun _ -> task { return asyncSeq2 { yield 10 } })
-            |> TaskCallbacks.collectAsync (fun _ -> task { return asyncSeq2 { yield 10 } })
+            |> AsyncSeq2.collectAsync (fun _ -> async2 { return asyncSeq2 { yield 10 } })
+            |> AsyncSeq2.collectAsync (fun _ -> async2 { return asyncSeq2 { yield 10 } })
+            |> AsyncSeq2.collectAsync (fun _ -> async2 { return asyncSeq2 { yield 10 } })
 
         // multiple maps have no effect unless executed
         i |> should equal 0
@@ -244,9 +244,9 @@ module SideEffects =
         // point of this test: just calling 'map' won't execute anything of the sequence!
         let _ =
             ts
-            |> TaskCallbacks.collectSeqAsync (fun _ -> task { return seq { yield 10 } })
-            |> TaskCallbacks.collectSeqAsync (fun _ -> task { return seq { yield 10 } })
-            |> TaskCallbacks.collectSeqAsync (fun _ -> task { return seq { yield 10 } })
+            |> AsyncSeq2.collectSeqAsync (fun _ -> async2 { return seq { yield 10 } })
+            |> AsyncSeq2.collectSeqAsync (fun _ -> async2 { return seq { yield 10 } })
+            |> AsyncSeq2.collectSeqAsync (fun _ -> async2 { return seq { yield 10 } })
 
         // multiple maps have no effect unless executed
         i |> should equal 0
