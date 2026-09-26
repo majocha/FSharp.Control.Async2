@@ -346,9 +346,9 @@ module Async2BuilderSourceExtensions =
         member inline _.Source(task: ValueTask<'T>) = Started(fun () -> task |> AsyncHelpers.Await)
         member inline _.Source(task: ValueTask) = Started(fun () -> task |> AsyncHelpers.Await)
 
-        // Cold start sources
-        //member inline this.Source(computation: Async<'T>) =
-        //    Cold(fun ct -> Async.StartImmediateAsTask(computation, ct) |> AsyncHelpers.Await)
+         //Cold start sources
+        member inline this.Source(computation: Async<'T>) =
+            Cold(fun ct -> Async.StartImmediateAsTask(computation, ct) |> AsyncHelpers.Await)
 
 [<AutoOpen>]
 module Async2BuilderImpl =

@@ -23,7 +23,7 @@ module AsyncSeq2AsyncExtensions =
                 let! ct = Async.CancellationToken
                 let computation = async2 {
                     for item in source do
-                        do! Async.StartImmediateAsTask(action item, cancellationToken = ct)
+                        do! action item
                 }
                 return! Async2.StartAsTask(computation, cancellationToken = ct) |> awaitTaskCorrect
             }
