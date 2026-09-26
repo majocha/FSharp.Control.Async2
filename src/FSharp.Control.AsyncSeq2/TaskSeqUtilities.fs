@@ -4,13 +4,6 @@ open System
 open System.Threading.Tasks
 open Microsoft.FSharp.Control
 
-[<AutoOpen>]
-module ValueTaskExtensions =
-    type ValueTask with
-        static member inline CompletedTask =
-            // This mimics how it is done in net5.0 and later internally
-            Unchecked.defaultof<ValueTask>
-
 module ValueTask =
     let False = ValueTask<bool>()
     let True = ValueTask<bool> true
@@ -19,14 +12,10 @@ module ValueTask =
     let inline ofTask (task: Task<'T>) = ValueTask<'T> task
 
     let inline ignore (valueTask: ValueTask<'T>) =
-        // this implementation follows Stephen Toub's advice, see:
-        // https://github.com/dotnet/runtime/issues/31503#issuecomment-554415966
-        if valueTask.IsCompletedSuccessfully then
-            // ensure any side effect executes
-            valueTask.Result |> ignore
-            ValueTask()
-        else
-            ValueTask(valueTask.AsTask())
+        runtimeValueTask {
+            let! _ = valueTask
+            return ()
+        }
 
     [<Obsolete "From version 0.4.0 onward, 'ValueTask.FromResult' is deprecated in favor of 'ValueTask.fromResult'. It will be removed in an upcoming release.">]
     let inline FromResult (value: 'T) = ValueTask<'T> value

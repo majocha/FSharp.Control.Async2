@@ -150,3 +150,10 @@ module RuntimeTask =
             Task.Run<'T>(fun () -> __runtimeAsyncReturn (code()))
 
     let backgroundRuntimeTask = BackgroundRuntimeTaskBuilder()
+
+    type ValueTaskBuilder () =
+        inherit RuntimeAsyncBuilder()
+        member inline _.Run([<InlineIfLambda>] code) : ValueTask<'T> =
+            __runtimeAsyncReturnValueTask(code())
+
+    let runtimeValueTask = ValueTaskBuilder()
