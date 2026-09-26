@@ -15,8 +15,6 @@ module EmptySeq =
     [<Fact>]
     let ``Null source is invalid`` () =
         // note: ofList and its variants do not have null as proper value
-        assertNullArg <| fun () -> AsyncSeq2.ofAsyncArray null
-        assertNullArg <| fun () -> AsyncSeq2.ofAsyncSeq null
         assertNullArg <| fun () -> AsyncSeq2.ofAsync2Array null
         assertNullArg <| fun () -> AsyncSeq2.ofAsync2Seq null
         assertNullArg <| fun () -> AsyncSeq2.ofTaskArray null
@@ -24,24 +22,6 @@ module EmptySeq =
         assertNullArg <| fun () -> AsyncSeq2.ofResizeArray null
         assertNullArg <| fun () -> AsyncSeq2.ofArray null
         assertNullArg <| fun () -> AsyncSeq2.ofSeq null
-
-    [<Fact>]
-    let ``AsyncSeq2-ofAsyncArray with empty set`` () =
-        Array.init 0 (fun x -> async { return x })
-        |> AsyncSeq2.ofAsyncArray
-        |> verifyEmpty
-
-    [<Fact>]
-    let ``AsyncSeq2-ofAsyncList with empty set`` () =
-        List.init 0 (fun x -> async { return x })
-        |> AsyncSeq2.ofAsyncList
-        |> verifyEmpty
-
-    [<Fact>]
-    let ``AsyncSeq2-ofAsyncSeq with empty set`` () =
-        Seq.init 0 (fun x -> async { return x })
-        |> AsyncSeq2.ofAsyncSeq
-        |> verifyEmpty
 
     [<Fact>]
     let ``AsyncSeq2-ofAsync2Array with empty set`` () =
@@ -93,24 +73,6 @@ module EmptySeq =
 
 
 module Immutable =
-    [<Fact>]
-    let ``AsyncSeq2-ofAsyncArray should succeed`` () =
-        Array.init 10 (fun x -> async { return x })
-        |> AsyncSeq2.ofAsyncArray
-        |> validateSequence
-
-    [<Fact>]
-    let ``AsyncSeq2-ofAsyncList should succeed`` () =
-        List.init 10 (fun x -> async { return x })
-        |> AsyncSeq2.ofAsyncList
-        |> validateSequence
-
-    [<Fact>]
-    let ``AsyncSeq2-ofAsyncSeq should succeed`` () =
-        Seq.init 10 (fun x -> async { return x })
-        |> AsyncSeq2.ofAsyncSeq
-        |> validateSequence
-
     [<Fact>]
     let ``AsyncSeq2-ofAsync2Array should succeed`` () =
         Array.init 10 (fun x -> async2 { return x })

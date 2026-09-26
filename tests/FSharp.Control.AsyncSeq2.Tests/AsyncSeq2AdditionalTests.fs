@@ -596,10 +596,10 @@ let ``async terminal callback cancellation disposes the enumerator`` () = task {
 }
 
 [<Fact>]
-let ``ported Async sources and channels honor enumeration cancellation`` () = task {
+let ``Async2 sources and channels honor enumeration cancellation`` () = task {
     use cts = new CancellationTokenSource()
-    let builtIn = AsyncSeq2.ofAsyncSeq [ async { return! Async.CancellationToken } ]
-    let! values = Async2.StartAsTask(AsyncSeq2.toArray builtIn, cancellationToken = cts.Token)
+    let source = AsyncSeq2.ofAsync2Seq [ Async2.CancellationToken ]
+    let! values = Async2.StartAsTask(AsyncSeq2.toArray source, cancellationToken = cts.Token)
     Assert.Equal(cts.Token, values[0])
     let channel = Channel.CreateUnbounded<int>()
     let pending = Async2.StartAsTask(AsyncSeq2.toArray (AsyncSeq2.ofChannel channel.Reader), cancellationToken = cts.Token)

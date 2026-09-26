@@ -15,7 +15,7 @@ so applications using only `async2` do not take on the sequence API or its
 packaging dependencies. It provides
 `asyncSeq2 { ... }` in `Microsoft.FSharp.Control`, yielding `AsyncSeq2<'T>` (an
 `IAsyncEnumerable<'T>`). It supports `yield`, `yield!`, `for`, `let!`/`do!` on
-tasks, value tasks, `Async` and `Async2`, and synchronous or asynchronous `use`.
+tasks, value tasks, and `Async2`, plus synchronous or asynchronous `use`.
 The builder is adapted from FSharp.Control.TaskSeq (see `src/FSharp.Control.AsyncSeq2/TASKSEQ-LICENSE.txt`).
 Each enumeration is cold; `GetAsyncEnumerator(token)` passes its token to
 bound `Async2` computations and nested asynchronous sequences. `async2` can
@@ -51,5 +51,7 @@ operator, cleanup, composition, and cancellation tests.
 `FSharp.Control.AsyncSeq2.TaskSeq.Tests` ports all 74 non-smoke TaskSeq test
 files (including two upstream-skipped cases) to xUnit v3/MTP. Transformation
 tests call `AsyncSeq2` directly with native `async2` callbacks; xUnit test
-boundaries and explicit `Async`, `Task`, and `ValueTask` interoperability
-tests retain those carriers.
+boundaries and explicit `Task` and `ValueTask` interoperability tests retain
+those carriers. The old F# `Async<'T>` sources and conversion helpers have
+been replaced by `Async2<'T>`; use `Async2` computations for cold, cancellable
+operations.

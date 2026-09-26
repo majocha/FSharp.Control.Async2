@@ -246,23 +246,6 @@ module AsyncSeq2OperationExtensions =
                     yield c
             }
 
-        static member ofAsyncSeq(source: Async<'T> seq) =
-            Internal.checkNonNull (nameof source) source
-
-            asyncSeq2 {
-                for computation in source do
-                    let! value = computation
-                    yield value
-            }
-
-        static member ofAsyncList(source: Async<'T> list) =
-            AsyncSeq2.ofAsyncSeq source
-
-        static member ofAsyncArray(source: Async<'T> array) =
-            Internal.checkNonNull (nameof source) source
-
-            AsyncSeq2.ofAsyncSeq source
-
         static member ofChannel(reader: ChannelReader<'T>) : AsyncSeq2<'T> =
             Internal.checkNonNull (nameof reader) reader
 

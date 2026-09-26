@@ -13,17 +13,6 @@ open Microsoft.FSharp.Control.AsyncSeq2Implementation
 //
 
 module Async2Extensions =
-    [<Theory; ClassData(typeof<TestImmTaskSeq>)>]
-    let ``Async2-for CE consumes asyncSeq2`` variant =
-        async2 {
-            let mutable sum = 0
-            for value in Gen.getSeqImmutable variant do
-                sum <- sum + value
-            return sum
-        }
-        |> Async2.StartAsTask
-        |> Task.map (should equal 55)
-
     [<Fact>]
     let ``Async2-for CE forwards cancellation to asyncSeq2`` () = task {
         use cts = new CancellationTokenSource()
@@ -40,7 +29,7 @@ module Async2Extensions =
 
 module EmptySeq =
     [<Theory; ClassData(typeof<TestEmptyVariants>)>]
-    let ``Async-for CE with empty asyncSeq2`` variant = async {
+    let ``Async2-for CE with empty asyncSeq2`` variant = Async2.StartAsTask <| async2 {
         let values = Gen.getEmptyVariant variant
 
         let mutable sum = 42
@@ -52,7 +41,7 @@ module EmptySeq =
     }
 
     [<Fact>]
-    let ``Async-for CE must execute side effect in empty asyncSeq2`` () = async {
+    let ``Async2-for CE must execute side effect in empty asyncSeq2`` () = Async2.StartAsTask <| async2 {
         let mutable data = 0
         let values = asyncSeq2 { do data <- 42 }
 
@@ -65,7 +54,7 @@ module EmptySeq =
 
 module Immutable =
     [<Theory; ClassData(typeof<TestImmTaskSeq>)>]
-    let ``Async-for CE with asyncSeq2`` variant = async {
+    let ``Async2-for CE with asyncSeq2`` variant = Async2.StartAsTask <| async2 {
         let values = Gen.getSeqImmutable variant
 
         let mutable sum = 0
@@ -77,7 +66,7 @@ module Immutable =
     }
 
     [<Theory; ClassData(typeof<TestImmTaskSeq>)>]
-    let ``Async-for CE with asyncSeq2 multiple iterations`` variant = async {
+    let ``Async2-for CE with asyncSeq2 multiple iterations`` variant = Async2.StartAsTask <| async2 {
         let values = Gen.getSeqImmutable variant
 
         let mutable sum = 0
@@ -96,7 +85,7 @@ module Immutable =
     }
 
     [<Fact>]
-    let ``Async-for mixing both types of for loops`` () = async {
+    let ``Async2-for mixing both types of for loops`` () = Async2.StartAsTask <| async2 {
         // this test ensures overload resolution is correct
         let ts = AsyncSeq2.singleton 20
         let sq = Seq.singleton 20
@@ -113,7 +102,7 @@ module Immutable =
 
 module SideEffects =
     [<Theory; ClassData(typeof<TestSideEffectTaskSeq>)>]
-    let ``Async-for CE with asyncSeq2`` variant = async {
+    let ``Async2-for CE with asyncSeq2`` variant = Async2.StartAsTask <| async2 {
         let values = Gen.getSeqWithSideEffect variant
 
         let mutable sum = 0
@@ -125,7 +114,7 @@ module SideEffects =
     }
 
     [<Theory; ClassData(typeof<TestSideEffectTaskSeq>)>]
-    let ``Async-for CE with asyncSeq2 multiple iterations`` variant = async {
+    let ``Async2-for CE with asyncSeq2 multiple iterations`` variant = Async2.StartAsTask <| async2 {
         let values = Gen.getSeqWithSideEffect variant
 
         let mutable sum = 0
@@ -146,11 +135,8 @@ module SideEffects =
 
 module ExceptionPropagation =
     [<Fact>]
-    let ``Async-for CE propagates exception without AggregateException wrapping`` () =
-        // Verifies fix for https://github.com/fsprojects/FSharp.Control.AsyncSeq2/issues/129
-        // Async.AwaitTask previously wrapped all task exceptions in AggregateException,
-        // breaking try/catch blocks in async {} expressions that expect the original type.
-        let run () = async {
+    let ``Async2-for CE propagates exception without AggregateException wrapping`` () =
+        let run () = async2 {
             let values = asyncSeq2 { yield 1 }
 
             try
@@ -160,16 +146,13 @@ module ExceptionPropagation =
                 ()
         }
 
-        // Should complete without AggregateException escaping
-        run () |> Async.RunSynchronously
+        run () |> Async2.RunSynchronously
 
     [<Fact>]
-    let ``Async-for CE try-catch catches original exception type, not AggregateException`` () =
-        // Verifies that the original exception type is visible in catch blocks,
-        // not wrapped in AggregateException as Async.AwaitTask used to do.
+    let ``Async2-for CE try-catch catches original exception type, not AggregateException`` () =
         let mutable caughtType: Type option = None
 
-        let run () = async {
+        let run () = async2 {
             let values = asyncSeq2 { yield 1 }
 
             try
@@ -179,12 +162,12 @@ module ExceptionPropagation =
                 caughtType <- Some(ex.GetType())
         }
 
-        run () |> Async.RunSynchronously
+        run () |> Async2.RunSynchronously
         caughtType |> should equal (Some typeof<ArgumentException>)
 
 module Other =
     [<Fact>]
-    let ``Async-for CE must call dispose in empty asyncSeq2`` () = async {
+    let ``Async2-for CE must call dispose in empty asyncSeq2`` () = Async2.StartAsTask <| async2 {
         let disposed = ref 0
         let values = Gen.getEmptyDisposableTaskSeq disposed
 
@@ -196,7 +179,7 @@ module Other =
     }
 
     [<Fact>]
-    let ``Async-for CE must call dispose on singleton`` () = async {
+    let ``Async2-for CE must call dispose on singleton`` () = Async2.StartAsTask <| async2 {
         let disposed = ref 0
         let mutable sum = 0
         let values = Gen.getSingletonDisposableTaskSeq disposed
@@ -209,11 +192,11 @@ module Other =
         sum |> should equal 42
     }
 
-// Tests for nested for loops in the async CE with IAsyncEnumerable as the outer sequence.
+// Tests for nested for loops in the async2 CE with IAsyncEnumerable as the outer sequence.
 // Related to: https://github.com/fsprojects/FSharp.Control.AsyncSeq2/issues/269
 module NestedLoops =
     [<Fact>]
-    let ``Async-for CE with nested regular list inside asyncSeq2 loop`` () = async {
+    let ``Async2-for CE with nested regular list inside asyncSeq2 loop`` () = Async2.StartAsTask <| async2 {
         // outer: IAsyncEnumerable<int list>, inner: regular list
         let outer = asyncSeq2 {
             yield [ 1; 2; 3 ]
@@ -231,7 +214,7 @@ module NestedLoops =
     }
 
     [<Fact>]
-    let ``Async-for CE with nested array inside asyncSeq2 loop`` () = async {
+    let ``Async2-for CE with nested array inside asyncSeq2 loop`` () = Async2.StartAsTask <| async2 {
         // outer: IAsyncEnumerable<int[]>, inner: regular array
         let outer = asyncSeq2 {
             yield [| 1; 2; 3 |]
@@ -248,7 +231,7 @@ module NestedLoops =
     }
 
     [<Fact>]
-    let ``Async-for CE with nested tuple-destructuring array inside asyncSeq2 loop`` () = async {
+    let ``Async2-for CE with nested tuple-destructuring array inside asyncSeq2 loop`` () = Async2.StartAsTask <| async2 {
         // outer: IAsyncEnumerable<int[]>, inner: zipped array with tuple destructuring
         // this pattern reproduces the scenario from issue #269
         let outer = asyncSeq2 { yield [| 1; 2; 3 |] }
@@ -263,7 +246,7 @@ module NestedLoops =
     }
 
     [<Fact>]
-    let ``Async-for CE with nested asyncSeq2 inside asyncSeq2 loop`` () = async {
+    let ``Async2-for CE with nested asyncSeq2 inside asyncSeq2 loop`` () = Async2.StartAsTask <| async2 {
         // outer: IAsyncEnumerable<IAsyncEnumerable<int>>, inner: asyncSeq2
         let inner1 = asyncSeq2 {
             yield 1

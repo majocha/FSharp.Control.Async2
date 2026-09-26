@@ -19,7 +19,6 @@
     <Compile Include="AsyncSeq2Src.fs" />
     <Compile Include="AsyncSeq2Concurrent.fs" />
     <Compile Include="AsyncSeq2Observable.fs" />
-    <Compile Include="AsyncSeq2AsyncExtensions.fs" />
     <Compile Include="TaskSeqTaskExtensions.fs" />
   </ItemGroup>
   <ItemGroup>

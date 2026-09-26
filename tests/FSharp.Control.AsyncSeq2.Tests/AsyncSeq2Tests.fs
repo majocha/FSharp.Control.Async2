@@ -5,6 +5,7 @@ open System.Collections.Generic
 open System.Threading
 open System.Threading.Tasks
 open Microsoft.FSharp.Control
+open Microsoft.FSharp.Control.AsyncSeq2Implementation
 open Xunit
 
 let private run computation = Async2.RunSynchronouslyImmediate computation
@@ -93,10 +94,10 @@ let ``async2 binding observes enumerator token`` () = task {
 }
 
 [<Fact>]
-let ``built in async binding observes enumerator token`` () = task {
+let ``algorithmSeq Async2 binding observes enumerator token`` () = task {
     use cts = new CancellationTokenSource()
-    let source = asyncSeq2 {
-        let! token = async { return! Async.CancellationToken }
+    let source = algorithmSeq {
+        let! token = Async2.CancellationToken
         yield token
     }
     use enumerator = source.GetAsyncEnumerator(cts.Token)

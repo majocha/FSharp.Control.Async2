@@ -59,25 +59,25 @@ let ``CE asyncSeq2: use 'do!' with a task-delay`` () =
     |> Task.map (fun _ -> value |> should equal 2)
 
 [<Fact>]
-let ``CE asyncSeq2: use 'do!' with Async`` () =
+let ``CE asyncSeq2: use 'do!' with Async2`` () =
     let mutable value = 0
 
     asyncSeq2 {
         do value <- value + 1
-        do! Async.Sleep 50
+        do! Async2.Sleep 50
         do value <- value + 1
     }
     |> verifyEmpty
     |> Task.map (fun _ -> value |> should equal 2)
 
 [<Fact>]
-let ``CE asyncSeq2: use 'do!' with Async - mutables`` () =
+let ``CE asyncSeq2: use 'do!' with Async2 - mutables`` () =
     let mutable value = 0
 
     asyncSeq2 {
-        do! async { value <- value + 1 }
-        do! Async.Sleep 50
-        do! async { value <- value + 1 }
+        do! async2 { value <- value + 1 }
+        do! Async2.Sleep 50
+        do! async2 { value <- value + 1 }
     }
     |> verifyEmpty
     |> Task.map (fun _ -> value |> should equal 2)
@@ -96,8 +96,8 @@ let ``CE asyncSeq2: use 'do!' with all kinds of overloads at once`` () =
         do! ValueTask<_>(()) // unit ValueTask that completes immediately
         do! Task.fromResult (()) // unit Task that completes immediately
         do! Task.Delay 0
-        do! Async.Sleep 0
-        do! async { value <- value + 1 } // eq 4
+        do! Async2.Sleep 0
+        do! async2 { value <- value + 1 } // eq 4
     }
     |> verifyEmpty
     |> Task.map (fun _ -> value |> should equal 4)

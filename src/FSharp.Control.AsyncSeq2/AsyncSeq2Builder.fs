@@ -77,11 +77,6 @@ type AsyncSeq2Builder() =
     member inline _.Source(computation: Async2<'T>) =
         Async2BuilderSources.Cold(fun ct -> computation.StartTrampolined ct |> AsyncHelpers.Await)
 
-    member inline _.Source(computation: Async<'T>) =
-        Async2BuilderSources.Cold(fun ct ->
-            Async.StartImmediateAsTask(computation, cancellationToken = ct)
-            |> AsyncHelpers.Await)
-
     member inline _.Source(source: seq<'T>) = source
     member inline _.Source(source: IAsyncEnumerable<'T>) = source
     member inline _.Source(task: Task<'T>) = Async2BuilderSources.Started(fun () -> AsyncHelpers.Await task)

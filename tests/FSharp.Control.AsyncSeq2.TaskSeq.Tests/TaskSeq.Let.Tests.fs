@@ -83,30 +83,30 @@ let ``CE asyncSeq2: use 'let!' with a non-generic task`` () =
     |> Task.map (fun _ -> value |> should equal 1)
 
 [<Fact>]
-let ``CE asyncSeq2: use 'let!' with Async`` () =
+let ``CE asyncSeq2: use 'let!' with Async2`` () =
     let mutable value = 0
 
     asyncSeq2 {
         do value <- value + 1
-        let! _ = Async.Sleep 50
+        let! _ = Async2.Sleep 50
         do value <- value + 1
     }
     |> verifyEmpty
     |> Task.map (fun _ -> value |> should equal 2)
 
 [<Fact>]
-let ``CE asyncSeq2: use 'let!' with Async - mutables`` () =
+let ``CE asyncSeq2: use 'let!' with Async2 - mutables`` () =
     let mutable value = 0
 
     asyncSeq2 {
-        do! async { value <- value + 1 }
+        do! async2 { value <- value + 1 }
         do value |> should equal 1
-        let! x = async { return value + 1 }
+        let! x = async2 { return value + 1 }
         do x |> should equal 2
-        do! Async.Sleep 50
-        do! async { value <- value + 1 }
+        do! Async2.Sleep 50
+        do! async2 { value <- value + 1 }
         do value |> should equal 2
-        let! ret = async { return value + 1 }
+        let! ret = async2 { return value + 1 }
         do value |> should equal 2
         do ret |> should equal 3
         yield x + ret // eq 5
@@ -139,10 +139,10 @@ let ``CE asyncSeq2: use 'let!' with all kinds of overloads at once`` () =
         let! c = ValueTask<_>(4) // ValueTask that completes immediately
         let! _ = Task.Factory.StartNew(fun () -> value <- value + 1) // non-generic Task with side effect
         let! d = Task.fromResult 99 // normal Task that completes immediately
-        let! _ = Async.Sleep 0 // unit Async
+        let! _ = Async2.Sleep 0 // unit Async2
 
-        let! e = async {
-            do! Async.Sleep 40
+        let! e = async2 {
+            do! Async2.Sleep 40
             do value <- value + 1 // eq 4 now
             return value
         }

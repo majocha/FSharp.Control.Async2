@@ -6,6 +6,7 @@ open System.Runtime.CompilerServices
 open System.Threading
 open System.Threading.Tasks
 
+open Microsoft.FSharp.Control
 open Microsoft.FSharp.Core.CompilerServices
 
 module TasklikeHelpers =
@@ -124,10 +125,9 @@ module RuntimeAsyncBuilderAwaitableExtensionsHighPriority =
         member inline _.Source(task: Task) = Started(fun () -> task |> AsyncHelpers.Await)
         member inline _.Source(task: ValueTask<'T>) = Started(fun () -> task |> AsyncHelpers.Await)
         member inline _.Source(task: ValueTask) = Started(fun () -> task |> AsyncHelpers.Await)
-        // Bind also cold-start async computations
-        member inline _.Source(computation: Async<'T>) =
-            let task = Async.StartImmediateAsTask computation
-            Started(fun () -> task |> AsyncHelpers.Await)
+        // Bind also cold-start Async2 computations
+        member inline _.Source(computation: Async2<'T>) =
+            Started(fun () -> computation.StartTrampolined CancellationToken.None |> AsyncHelpers.Await)
 
 [<AutoOpen>]
 module RuntimeTask =

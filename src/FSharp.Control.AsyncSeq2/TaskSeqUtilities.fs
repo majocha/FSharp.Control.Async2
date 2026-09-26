@@ -25,10 +25,8 @@ module ValueTask =
 
 module Task =
     let inline fromResult (value: 'U) : Task<'U> = Task.FromResult value
-    let inline ofAsync (async: Async<'T>) = runtimeTask { return! async }
     let inline ofTask (task': Task) = runtimeTask { do! task' }
     let inline apply (func: _ -> _) = func >> Task.FromResult
-    let inline toAsync (task: Task<'T>) = Async.AwaitTask task
     let inline toValueTask (task: Task<'T>) = ValueTask<'T> task
     let inline ofValueTask (valueTask: ValueTask<'T>) = runtimeTask { return! valueTask }
 
@@ -48,21 +46,4 @@ module Task =
     let inline bind (binder: 'T -> #Task<'U>) (task: Task<'T>) : Task<'U> = runtimeTask {
         let! t = task
         return! binder t
-    }
-
-module Async =
-    let inline ofTask (task: Task<'T>) = Async.AwaitTask task
-    let inline ofUnitTask (task: Task) = Async.AwaitTask task
-    let inline toTask (async: Async<'T>) = runtimeTask { return! async }
-
-    let inline ignore (async: Async<'T>) = Async.Ignore async
-
-    let inline map mapper (async: Async<'T>) : Async<'U> = ExtraTopLevelOperators.async {
-        let! result = async
-        return mapper result
-    }
-
-    let inline bind binder (async: Async<'T>) : Async<'U> = ExtraTopLevelOperators.async {
-        let! result = async
-        return! binder result
     }

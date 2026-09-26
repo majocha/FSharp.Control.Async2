@@ -260,14 +260,27 @@ let ``CE taskSeqDynamic with async value task bind`` () = task {
 }
 
 [<Fact>]
-let ``CE taskSeqDynamic with Async bind`` () = task {
+let ``CE taskSeqDynamic with Async2 bind`` () = task {
     let ts = taskSeqDynamic {
-        let! x = async { return 99 }
+        let! x = async2 { return 99 }
         yield x
     }
 
     let! data = ts |> ColdTask.toListAsync
     data |> should equal [ 99 ]
+}
+
+[<Fact>]
+let ``CE taskSeqDynamic forwards cancellation to Async2 binding`` () = task {
+    use cts = new CancellationTokenSource()
+    let source = taskSeqDynamic {
+        let! token = Async2.CancellationToken
+        yield token
+    }
+    use enumerator = source.GetAsyncEnumerator(cts.Token)
+    let! hasNext = enumerator.MoveNextAsync()
+    hasNext |> should equal true
+    enumerator.Current |> should equal cts.Token
 }
 
 [<Fact>]

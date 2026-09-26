@@ -129,7 +129,10 @@ module TaskSeqAwaitableExtensionsHighPriority =
         member inline _.Source(source: seq<'T>) = source
         member inline _.Source(source: IAsyncEnumerable<'T>) = source
         member inline _.Source(task: #Task<_>) = startAwaitable task
-        member inline _.Source(computation: Async<_>) = Started(fun () -> AsyncHelpers.Await(Async.StartImmediateAsTask computation))
+        member inline _.Source(computation: Async2<'T>) =
+            Started(fun () ->
+                computation.StartTrampolined(StateMachineHelpers.__runtimeAsyncSequenceCancellationToken())
+                |> AsyncHelpers.Await)
 
 [<AutoOpen>]
 module AlgorithmSeqBuilder =
