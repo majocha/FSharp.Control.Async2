@@ -25,6 +25,21 @@ module private AsyncSeq2Cold =
         Internal.checkNonNull (nameof second) second
         Async2.StartTaskImmediate(fun ct -> run ct (withToken ct first) (withToken ct second))
 
+    let terminalAsync (source: AsyncSeq2<'T>) (run: AsyncSeq2<'T> -> Async2<'U>) =
+        Internal.checkNonNull (nameof source) source
+        run source
+
+    let binaryAsync (first: AsyncSeq2<'T>) (second: AsyncSeq2<'U>) run =
+        Internal.checkNonNull (nameof first) first
+        Internal.checkNonNull (nameof second) second
+        run first second
+
+    let keyed projection source =
+        AsyncSeq2.mapAsync (fun value -> async2 {
+            let! key = projection value
+            return key, value
+        }) source
+
 [<AutoOpen>]
 module AsyncSeq2OperationExtensions =
     type AsyncSeq2 with
@@ -274,14 +289,18 @@ module AsyncSeq2OperationExtensions =
         static member maxBy projection source = AsyncSeq2Cold.terminal source (Internal.maxMinBy (<) projection)
         static member minBy projection source = AsyncSeq2Cold.terminal source (Internal.maxMinBy (>) projection)
         static member maxByAsync projection source =
-            AsyncSeq2Cold.terminalWithToken source (fun ct -> Internal.maxMinByAsync (<) (fun value -> Async2.StartAsTask(projection value, cancellationToken = ct)))
+            AsyncSeq2Cold.keyed projection source
+            |> fun keyed -> AsyncSeq2Cold.terminal keyed (Internal.maxMinBy (<) fst)
+            |> Async2.map snd
         static member minByAsync projection source =
-            AsyncSeq2Cold.terminalWithToken source (fun ct -> Internal.maxMinByAsync (>) (fun value -> Async2.StartAsTask(projection value, cancellationToken = ct)))
+            AsyncSeq2Cold.keyed projection source
+            |> fun keyed -> AsyncSeq2Cold.terminal keyed (Internal.maxMinBy (>) fst)
+            |> Async2.map snd
 
         static member lengthOrMax max source = AsyncSeq2Cold.terminal source (Internal.lengthBeforeMax max)
         static member lengthBy predicate source = AsyncSeq2Cold.terminal source (Internal.lengthBy (Some(Predicate predicate)))
         static member lengthByAsync predicate source =
-            AsyncSeq2Cold.terminalWithToken source (fun ct -> Internal.lengthBy (Some(PredicateAsync(fun value -> Async2.StartAsTask(predicate value, cancellationToken = ct)))))
+            AsyncSeq2.filterAsync predicate source |> AsyncSeq2.length
         static member init count initializer = Internal.init (Some count) (InitAction initializer)
         static member initInfinite initializer = Internal.init None (InitAction initializer)
         static member initAsync count (initializer: int -> Async2<'T>) : AsyncSeq2<'T> =
@@ -391,8 +410,7 @@ module AsyncSeq2OperationExtensions =
         static member iteri action source =
             AsyncSeq2Cold.terminal source (Internal.iter (CountableAction action))
         static member iteriAsync action source =
-            AsyncSeq2Cold.terminalWithToken source (fun ct ->
-                Internal.iter (AsyncCountableAction(fun index value -> Async2.StartAsTask(action index value, cancellationToken = ct))))
+            AsyncSeq2.mapiAsync action source |> AsyncSeq2.iter ignore
         static member mapi (mapper: int -> 'T -> 'U) source = Internal.map (CountableAction mapper) source
         static member mapiAsync (mapper: int -> 'T -> Async2<'U>) (source: AsyncSeq2<'T>) : AsyncSeq2<'U> =
             Internal.checkNonNull (nameof source) source
@@ -588,18 +606,18 @@ module AsyncSeq2OperationExtensions =
         static member tryPick chooser source =
             AsyncSeq2Cold.terminal source (Internal.tryPick (TryPick chooser))
         static member tryPickAsync chooser source =
-            AsyncSeq2Cold.terminalWithToken source (fun ct ->
-                Internal.tryPick (TryPickAsync(fun value -> Async2.StartAsTask(chooser value, cancellationToken = ct))))
+            AsyncSeq2.chooseAsync chooser source |> AsyncSeq2.tryHead
         static member tryFind predicate source =
             AsyncSeq2Cold.terminal source (Internal.tryFind (Predicate predicate))
         static member tryFindAsync predicate source =
-            AsyncSeq2Cold.terminalWithToken source (fun ct ->
-                Internal.tryFind (PredicateAsync(fun value -> Async2.StartAsTask(predicate value, cancellationToken = ct))))
+            AsyncSeq2.filterAsync predicate source |> AsyncSeq2.tryHead
         static member tryFindIndex predicate source =
             AsyncSeq2Cold.terminal source (Internal.tryFindIndex (Predicate predicate))
         static member tryFindIndexAsync predicate source =
-            AsyncSeq2Cold.terminalWithToken source (fun ct ->
-                Internal.tryFindIndex (PredicateAsync(fun value -> Async2.StartAsTask(predicate value, cancellationToken = ct))))
+            AsyncSeq2.indexed source
+            |> AsyncSeq2.filterAsync (fun (_, value) -> predicate value)
+            |> AsyncSeq2.tryHead
+            |> Async2.map (Option.map fst)
 
         static member insertAt index value source = Internal.insertAt index (One value) source
         static member insertManyAt index values source = Internal.insertAt index (Many values) source
@@ -697,27 +715,24 @@ module AsyncSeq2OperationExtensions =
                 Internal.tryPick (TryPick chooser) values |> Task.map (Option.defaultWith Internal.raiseNotFound))
 
         static member pickAsync chooser source =
-            AsyncSeq2Cold.terminalWithToken source (fun ct values ->
-                Internal.tryPick (TryPickAsync(fun value -> Async2.StartAsTask(chooser value, cancellationToken = ct))) values
-                |> Task.map (Option.defaultWith Internal.raiseNotFound))
+            AsyncSeq2.tryPickAsync chooser source
+            |> Async2.map (Option.defaultWith Internal.raiseNotFound)
 
         static member find predicate source =
             AsyncSeq2Cold.terminal source (fun values ->
                 Internal.tryFind (Predicate predicate) values |> Task.map (Option.defaultWith Internal.raiseNotFound))
 
         static member findAsync predicate source =
-            AsyncSeq2Cold.terminalWithToken source (fun ct values ->
-                Internal.tryFind (PredicateAsync(fun value -> Async2.StartAsTask(predicate value, cancellationToken = ct))) values
-                |> Task.map (Option.defaultWith Internal.raiseNotFound))
+            AsyncSeq2.tryFindAsync predicate source
+            |> Async2.map (Option.defaultWith Internal.raiseNotFound)
 
         static member findIndex predicate source =
             AsyncSeq2Cold.terminal source (fun values ->
                 Internal.tryFindIndex (Predicate predicate) values |> Task.map (Option.defaultWith Internal.raiseNotFound))
 
         static member findIndexAsync predicate source =
-            AsyncSeq2Cold.terminalWithToken source (fun ct values ->
-                Internal.tryFindIndex (PredicateAsync(fun value -> Async2.StartAsTask(predicate value, cancellationToken = ct))) values
-                |> Task.map (Option.defaultWith Internal.raiseNotFound))
+            AsyncSeq2.tryFindIndexAsync predicate source
+            |> Async2.map (Option.defaultWith Internal.raiseNotFound)
 
         //
         // zip/unzip/fold etc functions
@@ -736,21 +751,52 @@ module AsyncSeq2OperationExtensions =
         static member compareWith comparer source1 source2 =
             AsyncSeq2Cold.binaryWithToken source1 source2 (fun _ -> Internal.compareWith comparer)
         static member compareWithAsync comparer source1 source2 =
-            AsyncSeq2Cold.binaryWithToken source1 source2 (fun ct ->
-                Internal.compareWithAsync (fun a b -> Async2.StartAsTask(comparer a b, cancellationToken = ct)))
+            AsyncSeq2Cold.binaryAsync source1 source2 (fun first second -> async2 {
+                let! ct = Async2.CancellationToken
+                use left = first.GetAsyncEnumerator ct
+                use right = second.GetAsyncEnumerator ct
+                let mutable comparison = 0
+                let! firstLeft = left.MoveNextAsync()
+                let! firstRight = right.MoveNextAsync()
+                let mutable hasLeft = firstLeft
+                let mutable hasRight = firstRight
+                while comparison = 0 && (hasLeft || hasRight) do
+                    if not hasLeft then comparison <- -1
+                    elif not hasRight then comparison <- 1
+                    else
+                        let! result = comparer left.Current right.Current
+                        comparison <- result
+                        if result = 0 then
+                            let! nextLeft = left.MoveNextAsync()
+                            let! nextRight = right.MoveNextAsync()
+                            hasLeft <- nextLeft
+                            hasRight <- nextRight
+                return comparison
+            })
         static member fold folder state source =
             AsyncSeq2Cold.terminal source (Internal.fold (FolderAction folder) state)
         static member foldAsync folder state source =
-            AsyncSeq2Cold.terminalWithToken source (fun ct ->
-                Internal.fold (AsyncFolderAction(fun acc value -> Async2.StartAsTask(folder acc value, cancellationToken = ct))) state)
+            AsyncSeq2.scanAsync folder state source |> AsyncSeq2.last
         static member foldWhile predicate folder state source =
             AsyncSeq2Cold.terminal source (Internal.foldWhile predicate folder state)
 
         static member foldWhileAsync predicate folder state source =
-            AsyncSeq2Cold.terminalWithToken source (fun ct ->
-                Internal.foldWhileAsync
-                    (fun acc value -> Async2.StartAsTask(predicate acc value, cancellationToken = ct))
-                    (fun acc value -> Async2.StartAsTask(folder acc value, cancellationToken = ct)) state)
+            AsyncSeq2Cold.terminalAsync source (fun source -> async2 {
+                let! ct = Async2.CancellationToken
+                use e = source.GetAsyncEnumerator ct
+                let mutable result = state
+                let mutable running = true
+                while running do
+                    let! next = e.MoveNextAsync()
+                    if next then
+                        let! keepGoing = predicate result e.Current
+                        if keepGoing then
+                            let! newState = folder result e.Current
+                            result <- newState
+                        else running <- false
+                    else running <- false
+                return result
+            })
 
         static member scan folder state source = Internal.scan (FolderAction folder) state source
         static member scanAsync (folder: 'State -> 'T -> Async2<'State>) state (source: AsyncSeq2<'T>) : AsyncSeq2<'State> =
@@ -765,8 +811,21 @@ module AsyncSeq2OperationExtensions =
             }
         static member reduce folder source = AsyncSeq2Cold.terminal source (Internal.reduce (FolderAction folder))
         static member reduceAsync folder source =
-            AsyncSeq2Cold.terminalWithToken source (fun ct ->
-                Internal.reduce (AsyncFolderAction(fun acc value -> Async2.StartAsTask(folder acc value, cancellationToken = ct))))
+            AsyncSeq2Cold.terminalAsync source (fun source -> async2 {
+                let! ct = Async2.CancellationToken
+                use e = source.GetAsyncEnumerator ct
+                let! first = e.MoveNextAsync()
+                if not first then Internal.raiseEmptySeq ()
+                let mutable result = e.Current
+                let mutable running = true
+                while running do
+                    let! next = e.MoveNextAsync()
+                    if next then
+                        let! updated = folder result e.Current
+                        result <- updated
+                    else running <- false
+                return result
+            })
 
         //
         // groupBy/countBy/partition
@@ -775,24 +834,32 @@ module AsyncSeq2OperationExtensions =
         static member groupBy projection source =
             AsyncSeq2Cold.terminal source (Internal.groupBy (ProjectorAction projection))
         static member groupByAsync projection source =
-            AsyncSeq2Cold.terminalWithToken source (fun ct ->
-                Internal.groupBy (AsyncProjectorAction(fun value -> Async2.StartAsTask(projection value, cancellationToken = ct))))
+            AsyncSeq2Cold.keyed projection source
+            |> fun keyed -> AsyncSeq2Cold.terminal keyed (Internal.groupBy (ProjectorAction fst))
+            |> Async2.map (Array.map (fun (key, values) -> key, Array.map snd values))
         static member countBy projection source =
             AsyncSeq2Cold.terminal source (Internal.countBy (ProjectorAction projection))
         static member countByAsync projection source =
-            AsyncSeq2Cold.terminalWithToken source (fun ct ->
-                Internal.countBy (AsyncProjectorAction(fun value -> Async2.StartAsTask(projection value, cancellationToken = ct))))
+            AsyncSeq2Cold.keyed projection source
+            |> fun keyed -> AsyncSeq2Cold.terminal keyed (Internal.countBy (ProjectorAction fst))
         static member partition predicate source =
             AsyncSeq2Cold.terminal source (Internal.partition (Predicate predicate))
         static member partitionAsync predicate source =
-            AsyncSeq2Cold.terminalWithToken source (fun ct ->
-                Internal.partition (PredicateAsync(fun value -> Async2.StartAsTask(predicate value, cancellationToken = ct))))
+            AsyncSeq2Cold.keyed predicate source
+            |> fun keyed -> AsyncSeq2Cold.terminal keyed (Internal.partition (Predicate fst))
+            |> Async2.map (fun (yes, no) -> Array.map snd yes, Array.map snd no)
         static member mapFold mapping state source =
             AsyncSeq2Cold.terminal source (Internal.mapFold (MapFolderAction mapping) state)
         static member mapFoldAsync mapping state source =
-            AsyncSeq2Cold.terminalWithToken source (fun ct ->
-                Internal.mapFold
-                    (AsyncMapFolderAction(fun acc value -> Async2.StartAsTask(mapping acc value, cancellationToken = ct))) state)
+            AsyncSeq2Cold.terminalAsync source (fun source -> async2 {
+                let results = ResizeArray()
+                let mutable current = state
+                for value in source do
+                    let! result, next = mapping current value
+                    results.Add result
+                    current <- next
+                return results.ToArray(), current
+            })
         static member threadState folder state source = Internal.threadState folder state source
         static member threadStateAsync (folder: 'State -> 'T -> Async2<'U * 'State>) state (source: AsyncSeq2<'T>) : AsyncSeq2<'U> =
             Internal.checkNonNull (nameof source) source

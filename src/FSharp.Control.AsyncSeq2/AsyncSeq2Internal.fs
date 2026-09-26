@@ -306,34 +306,6 @@ module internal AsyncSeq2Internal =
                 AsyncHelpers.Await (e.DisposeAsync())
         )
 
-    // 'compare' is either `<` or `>` (i.e, less-than, greater-than resp.)
-    let inline maxMinByAsync ([<InlineIfLambda>] compare) ([<InlineIfLambda>] projectionAsync) (source: AsyncSeq2<_>) =
-        checkNonNull (nameof source) source
-
-        FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
-            let e = source.GetAsyncEnumerator CancellationToken.None
-
-            try
-                AsyncHelpers.Await (moveFirstOrRaiseUnsafe e)
-
-                let value = e.Current
-                let projValue = AsyncHelpers.Await (projectionAsync value : Task<_>)
-                let mutable accProjection = projValue
-                let mutable accValue = value
-
-                while AsyncHelpers.Await (e.MoveNextAsync()) do
-                    let value = e.Current
-                    let currentProjection = AsyncHelpers.Await (projectionAsync value : Task<_>)
-
-                    if compare accProjection currentProjection then
-                        accProjection <- currentProjection
-                        accValue <- value
-
-                accValue
-            finally
-                AsyncHelpers.Await (e.DisposeAsync())
-        )
-
     let tryExactlyOne (source: AsyncSeq2<_>) =
         checkNonNull (nameof source) source
 
@@ -478,35 +450,6 @@ module internal AsyncSeq2Internal =
                     if hasNext then
                         if predicate result e.Current then
                             result <- folder result e.Current
-                        else
-                            running <- false
-                    else
-                        running <- false
-
-                result
-            finally
-                AsyncHelpers.Await (e.DisposeAsync())
-        )
-
-    let foldWhileAsync predicate folder initial (source: AsyncSeq2<_>) =
-        checkNonNull (nameof source) source
-
-        FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
-            let e = source.GetAsyncEnumerator CancellationToken.None
-
-            try
-                let mutable result = initial
-                let mutable running = true
-
-                while running do
-                    let hasNext = AsyncHelpers.Await (e.MoveNextAsync())
-
-                    if hasNext then
-                        let keepGoing = AsyncHelpers.Await (predicate result e.Current : Task<bool>)
-
-                        if keepGoing then
-                            let newState = AsyncHelpers.Await (folder result e.Current : Task<_>)
-                            result <- newState
                         else
                             running <- false
                     else
@@ -820,42 +763,6 @@ module internal AsyncSeq2Internal =
                     | _, false -> result <- 1 // source2 is shorter: greater than
                     | true, true ->
                         let cmp = comparer e1.Current e2.Current
-
-                        if cmp <> 0 then
-                            result <- cmp
-                        else
-                            let s1 = AsyncHelpers.Await (e1.MoveNextAsync())
-                            let s2 = AsyncHelpers.Await (e2.MoveNextAsync())
-                            has1 <- s1
-                            has2 <- s2
-
-                result
-            finally
-                AsyncHelpers.Await (e1.DisposeAsync())
-                AsyncHelpers.Await (e2.DisposeAsync())
-        )
-
-    let compareWithAsync (comparer: 'T -> 'T -> #Task<int>) (source1: AsyncSeq2<'T>) (source2: AsyncSeq2<'T>) =
-        checkNonNull (nameof source1) source1
-        checkNonNull (nameof source2) source2
-
-        FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
-            let e1 = source1.GetAsyncEnumerator CancellationToken.None
-            let e2 = source2.GetAsyncEnumerator CancellationToken.None
-
-            try
-                let mutable result = 0
-                let step1 = AsyncHelpers.Await (e1.MoveNextAsync())
-                let step2 = AsyncHelpers.Await (e2.MoveNextAsync())
-                let mutable has1 = step1
-                let mutable has2 = step2
-
-                while result = 0 && (has1 || has2) do
-                    match has1, has2 with
-                    | false, _ -> result <- -1 // source1 is shorter: less than
-                    | _, false -> result <- 1 // source2 is shorter: greater than
-                    | true, true ->
-                        let cmp = AsyncHelpers.Await (comparer e1.Current e2.Current)
 
                         if cmp <> 0 then
                             result <- cmp

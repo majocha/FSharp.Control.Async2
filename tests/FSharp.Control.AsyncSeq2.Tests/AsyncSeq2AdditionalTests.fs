@@ -463,6 +463,113 @@ let ``ported terminals stay cold and forward the Async2 token`` () =
     Assert.All(seen, fun token -> Assert.Equal(cts.Token, token))
 
 [<Fact>]
+let ``async terminal searches use the ambient token and short circuit`` () =
+    use cts = new CancellationTokenSource()
+    let mutable calls = 0
+    let source = AsyncSeq2.ofSeq [ 1; 2; 3 ]
+    let check value = async2 {
+        let! token = Async2.CancellationToken
+        Assert.Equal(cts.Token, token)
+        calls <- calls + 1
+        return value = 2
+    }
+    let execute computation = Async2.RunSynchronouslyImmediate(computation, cancellationToken = cts.Token)
+    let search = AsyncSeq2.tryFindAsync check source
+    Assert.Equal(0, calls)
+    Assert.Equal(Some 2, execute search)
+    Assert.Equal(2, calls)
+    Assert.Equal(2, execute (AsyncSeq2.findAsync check source))
+    Assert.Equal(Some 1, execute (AsyncSeq2.tryFindIndexAsync check source))
+    Assert.Equal(1, execute (AsyncSeq2.findIndexAsync check source))
+    let choose value = async2 {
+        let! token = Async2.CancellationToken
+        Assert.Equal(cts.Token, token)
+        return if value = 2 then Some(value * 10) else None
+    }
+    Assert.Equal(Some 20, execute (AsyncSeq2.tryPickAsync choose source))
+    Assert.Equal(20, execute (AsyncSeq2.pickAsync choose source))
+    Assert.Throws<KeyNotFoundException>(fun () ->
+        AsyncSeq2.findAsync (fun _ -> async2 { return false }) source |> execute |> ignore) |> ignore
+
+[<Fact>]
+let ``async terminal aggregates run callbacks directly with the ambient token`` () =
+    use cts = new CancellationTokenSource()
+    let source = AsyncSeq2.ofSeq [ 1; 2; 3 ]
+    let execute computation = Async2.RunSynchronouslyImmediate(computation, cancellationToken = cts.Token)
+    let callback value = async2 {
+        let! token = Async2.CancellationToken
+        Assert.Equal(cts.Token, token)
+        return value
+    }
+    let mutable indices = []
+    Assert.Equal(3, execute (AsyncSeq2.maxByAsync callback source))
+    Assert.Equal(1, execute (AsyncSeq2.minByAsync callback source))
+    Assert.Equal(2, execute (AsyncSeq2.lengthByAsync (fun x -> callback (x % 2 = 1)) source))
+    execute (AsyncSeq2.iteriAsync (fun i x -> async2 {
+        let! _ = callback x
+        indices <- (i, x) :: indices
+    }) source)
+    Assert.Equal<int * int>([| 0, 1; 1, 2; 2, 3 |], indices |> List.rev |> List.toArray)
+    let folder state value = callback (state + value)
+    Assert.Equal(6, execute (AsyncSeq2.foldAsync folder 0 source))
+    Assert.Equal(6, execute (AsyncSeq2.reduceAsync folder source))
+    Assert.Equal(3, execute (AsyncSeq2.foldWhileAsync
+        (fun state _ -> callback (state < 3)) folder 0 source))
+    let mapped, finalState =
+        AsyncSeq2.mapFoldAsync (fun state value -> callback (state + value, state + value)) 0 source
+        |> execute
+    Assert.Equal<int>([| 1; 3; 6 |], mapped)
+    Assert.Equal(6, finalState)
+    Assert.Throws<ArgumentException>(fun () ->
+        AsyncSeq2.reduceAsync folder (AsyncSeq2.empty<int> ()) |> execute |> ignore) |> ignore
+
+[<Fact>]
+let ``async terminal grouping and comparison retain ordering`` () =
+    use cts = new CancellationTokenSource()
+    let execute computation = Async2.RunSynchronouslyImmediate(computation, cancellationToken = cts.Token)
+    let callback value = async2 {
+        let! token = Async2.CancellationToken
+        Assert.Equal(cts.Token, token)
+        return value
+    }
+    let source = AsyncSeq2.ofSeq [ 1; 2; 3; 4 ]
+    let group = callback << (fun x -> x % 2)
+    let groups = execute (AsyncSeq2.groupByAsync group source)
+    Assert.Equal<int>([| 1; 3 |], snd groups[0])
+    Assert.Equal<int>([| 2; 4 |], snd groups[1])
+    Assert.Equal<int * int>([| 1, 2; 0, 2 |], execute (AsyncSeq2.countByAsync group source))
+    let yes, no = execute (AsyncSeq2.partitionAsync (fun x -> callback (x % 2 = 0)) source)
+    Assert.Equal<int>([| 2; 4 |], yes)
+    Assert.Equal<int>([| 1; 3 |], no)
+    let compare a b = callback (Operators.compare a b)
+    Assert.Equal(0, execute (AsyncSeq2.compareWithAsync compare source source))
+    Assert.Equal(-1, execute (AsyncSeq2.compareWithAsync compare (AsyncSeq2.ofSeq [ 1 ]) source))
+    Assert.Equal(1, execute (AsyncSeq2.compareWithAsync compare source (AsyncSeq2.ofSeq [ 1 ])))
+
+[<Fact>]
+let ``async terminal callback cancellation disposes the enumerator`` () = task {
+    use cts = new CancellationTokenSource()
+    let started = TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+    let mutable disposed = false
+    let source = asyncSeq2 {
+        use resource = { new IDisposable with member _.Dispose() = disposed <- true }
+        yield 1
+        yield 2
+    }
+    let predicate _ = async2 {
+        started.TrySetResult(()) |> ignore
+        do! Async2.Sleep 30000
+        return true
+    }
+    let running = Async2.StartAsTask(AsyncSeq2.lengthByAsync predicate source, cancellationToken = cts.Token)
+    do! started.Task
+    cts.Cancel()
+    let! error = Assert.ThrowsAnyAsync<OperationCanceledException>(fun () -> running :> Task)
+    Assert.Equal(cts.Token, error.CancellationToken)
+    Assert.True(disposed)
+}
+
+[<Fact>]
 let ``ported Async sources and channels honor enumeration cancellation`` () = task {
     use cts = new CancellationTokenSource()
     let builtIn = AsyncSeq2.ofAsyncSeq [ async { return! Async.CancellationToken } ]
