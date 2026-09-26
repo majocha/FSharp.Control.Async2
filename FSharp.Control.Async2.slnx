@@ -1,4 +1,7 @@
 <Solution>
   <Project Path="src/FSharp.Control.Async2/FSharp.Control.Async2.fsproj" />
+  <Project Path="src/FSharp.Control.AsyncSeq2/FSharp.Control.AsyncSeq2.fsproj" />
   <Project Path="tests/FSharp.Control.Async2.Tests/FSharp.Control.Async2.Tests.fsproj" />
+  <Project Path="tests/FSharp.Control.AsyncSeq2.Tests/FSharp.Control.AsyncSeq2.Tests.fsproj" />
+  <Project Path="tests/FSharp.Control.AsyncSeq2.TaskSeq.Tests/FSharp.Control.AsyncSeq2.TaskSeq.Tests.fsproj" />
 </Solution>

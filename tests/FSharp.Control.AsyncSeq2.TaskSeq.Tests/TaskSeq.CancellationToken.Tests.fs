@@ -1,0 +1,235 @@
+module AsyncSeq2.Tests.CancellationToken
+
+open System
+open System.Collections.Generic
+open System.Threading
+open System.Threading.Tasks
+
+open Xunit
+open FsUnit.Xunit
+
+open Microsoft.FSharp.Control
+open Microsoft.FSharp.Control.AsyncSeq2Implementation
+
+/// An infinite asyncSeq2 that yields 1 forever
+let private infiniteOnes () = asyncSeq2 {
+    while true do
+        yield 1
+}
+
+/// A finite asyncSeq2 with a few items
+let private fiveItems () = asyncSeq2 {
+    yield 1
+    yield 2
+    yield 3
+    yield 4
+    yield 5
+}
+
+module Cancellation =
+
+    [<Fact>]
+    let ``GetAsyncEnumerator with pre-cancelled token: first MoveNextAsync throws OperationCanceledException`` () = task {
+        use cts = new CancellationTokenSource()
+        cts.Cancel()
+        use enum = (infiniteOnes ()).GetAsyncEnumerator(cts.Token)
+
+        fun () -> enum.MoveNextAsync().AsTask() |> Task.ignore
+        |> should throwAsync typeof<OperationCanceledException>
+    }
+
+    [<Fact>]
+    let ``GetAsyncEnumerator with pre-cancelled token: MoveNextAsync on finite seq also throws`` () = task {
+        use cts = new CancellationTokenSource()
+        cts.Cancel()
+        use enum = (fiveItems ()).GetAsyncEnumerator(cts.Token)
+
+        fun () -> enum.MoveNextAsync().AsTask() |> Task.ignore
+        |> should throwAsync typeof<OperationCanceledException>
+    }
+
+    [<Fact>]
+    let ``GetAsyncEnumerator with non-cancelled token: iteration proceeds normally`` () = task {
+        use cts = new CancellationTokenSource()
+        use enum = (fiveItems ()).GetAsyncEnumerator(cts.Token)
+        let mutable count = 0
+        let mutable canContinue = true
+
+        while canContinue do
+            let! hasNext = enum.MoveNextAsync()
+
+            if hasNext then count <- count + 1 else canContinue <- false
+
+        count |> should equal 5
+    }
+
+    [<Fact>]
+    let ``GetAsyncEnumerator with CancellationToken.None: iteration proceeds normally`` () = task {
+        use enum = (fiveItems ()).GetAsyncEnumerator(CancellationToken.None)
+        let mutable count = 0
+        let mutable canContinue = true
+
+        while canContinue do
+            let! hasNext = enum.MoveNextAsync()
+
+            if hasNext then count <- count + 1 else canContinue <- false
+
+        count |> should equal 5
+    }
+
+    [<Fact>]
+    let ``Token cancelled after partial iteration: next MoveNextAsync throws OperationCanceledException`` () = task {
+        use cts = new CancellationTokenSource()
+        use enum = (fiveItems ()).GetAsyncEnumerator(cts.Token)
+
+        // Consume first two items normally
+        let! _ = enum.MoveNextAsync()
+        let! _ = enum.MoveNextAsync()
+
+        // Cancel the token
+        cts.Cancel()
+
+        // Next call should throw
+        fun () -> enum.MoveNextAsync().AsTask() |> Task.ignore
+        |> should throwAsync typeof<OperationCanceledException>
+    }
+
+    [<Fact>]
+    let ``Infinite sequence with pre-cancelled token: throws immediately without consuming any items`` () = task {
+        use cts = new CancellationTokenSource()
+        cts.Cancel()
+        let mutable itemsConsumed = 0
+
+        let seq = asyncSeq2 {
+            while true do
+                itemsConsumed <- itemsConsumed + 1
+                yield itemsConsumed
+        }
+
+        use enum = seq.GetAsyncEnumerator(cts.Token)
+
+        fun () -> enum.MoveNextAsync().AsTask() |> Task.ignore
+        |> should throwAsync typeof<OperationCanceledException>
+
+        // The body should not have run (cancellation checked before advancing state machine)
+        itemsConsumed |> should equal 0
+    }
+
+    [<Fact>]
+    let ``Token cancelled mid-iteration of infinite sequence terminates with OperationCanceledException`` () = task {
+        use cts = new CancellationTokenSource()
+        use enum = (infiniteOnes ()).GetAsyncEnumerator(cts.Token)
+
+        // Iterate a few steps without cancellation
+        for _ in 1..5 do
+            let! hasNext = enum.MoveNextAsync()
+            hasNext |> should be True
+
+        // Now cancel
+        cts.Cancel()
+
+        // Next call should throw
+        fun () -> enum.MoveNextAsync().AsTask() |> Task.ignore
+        |> should throwAsync typeof<OperationCanceledException>
+    }
+
+    [<Fact>]
+    let ``Multiple enumerators of same sequence respect independent cancellation tokens`` () = task {
+        let source = fiveItems ()
+        use cts1 = new CancellationTokenSource()
+        use cts2 = new CancellationTokenSource()
+
+        // Cancel only the first token
+        cts1.Cancel()
+
+        use enum1 = source.GetAsyncEnumerator(cts1.Token)
+        use enum2 = source.GetAsyncEnumerator(cts2.Token)
+
+        // enum1 should throw (cancelled)
+        fun () -> enum1.MoveNextAsync().AsTask() |> Task.ignore
+        |> should throwAsync typeof<OperationCanceledException>
+
+        // enum2 should work normally (not cancelled)
+        let! hasNext = enum2.MoveNextAsync()
+        hasNext |> should be True
+        enum2.Current |> should equal 1
+    }
+
+module SideEffects =
+
+    [<Fact>]
+    let ``Cancelling one enumerator does not affect side effects of a fresh enumerator over the same asyncSeq2`` () = task {
+        let mutable itemsProduced = 0
+
+        let source = asyncSeq2 {
+            for i in 1..5 do
+                itemsProduced <- itemsProduced + 1
+                yield i
+        }
+
+        // fully consume with a first, never-cancelled enumerator
+        use cts1 = new CancellationTokenSource()
+        use enum1 = source.GetAsyncEnumerator(cts1.Token)
+        let mutable canContinue = true
+
+        while canContinue do
+            let! hasNext = enum1.MoveNextAsync()
+
+            if not hasNext then
+                canContinue <- false
+
+        itemsProduced |> should equal 5
+
+        // cancel and dispose that first enumerator explicitly, then re-enumerate the same
+        // asyncSeq2 from scratch with a fresh, non-cancelled token
+        cts1.Cancel()
+        do! enum1.DisposeAsync()
+
+        use cts2 = new CancellationTokenSource()
+        use enum2 = source.GetAsyncEnumerator(cts2.Token)
+        let! hasNext = enum2.MoveNextAsync()
+
+        // re-enumeration re-runs the body from scratch: side effects accumulate further,
+        // and the previous enumerator's cancellation has no bearing on this fresh one
+        hasNext |> should be True
+        enum2.Current |> should equal 1
+        itemsProduced |> should equal 6
+    }
+
+    [<Fact>]
+    let ``A CancellationToken passed to GetAsyncEnumerator does not prevent re-iteration with a different token`` () = task {
+        let mutable totalCalls = 0
+
+        let source = asyncSeq2 {
+            for i in 1..3 do
+                totalCalls <- totalCalls + 1
+                yield i
+        }
+
+        let drain (enum: IAsyncEnumerator<int>) = task {
+            let items = ResizeArray()
+            let mutable canContinue = true
+
+            while canContinue do
+                let! hasNext = enum.MoveNextAsync()
+
+                if hasNext then
+                    items.Add enum.Current
+                else
+                    canContinue <- false
+
+            return List.ofSeq items
+        }
+
+        use cts = new CancellationTokenSource()
+        use enum1 = source.GetAsyncEnumerator(cts.Token)
+        let! first = drain enum1
+        first |> should equal [ 1; 2; 3 ]
+        totalCalls |> should equal 3
+
+        // re-iterate using CancellationToken.None: side effects re-run independently
+        use enum2 = source.GetAsyncEnumerator(CancellationToken.None)
+        let! second = drain enum2
+        second |> should equal [ 1; 2; 3 ]
+        totalCalls |> should equal 6
+    }

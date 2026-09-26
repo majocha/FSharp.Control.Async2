@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net11.0</TargetFramework>
+    <LangVersion>preview</LangVersion>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <AssemblyName>FSharp.Control.AsyncSeq2</AssemblyName>
+    <RootNamespace>Microsoft.FSharp.Control</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="AsyncSeq2Builder.fs" />
+    <Compile Include="TaskSeqRuntimeTaskBuilder.fs" />
+    <Compile Include="TaskSeqUtilities.fs" />
+    <Compile Include="AlgorithmSeqBuilder.fs" />
+    <Compile Include="AsyncSeq2Internal.fs" />
+    <Compile Include="AsyncSeq2.fsi" />
+    <Compile Include="AsyncSeq2.fs" />
+    <Compile Include="AsyncSeq2Operations.fs" />
+    <Compile Include="AsyncSeq2Additional.fs" />
+    <Compile Include="AsyncSeq2Src.fs" />
+    <Compile Include="AsyncSeq2Concurrent.fs" />
+    <Compile Include="AsyncSeq2Observable.fs" />
+    <Compile Include="AsyncSeq2AsyncExtensions.fs" />
+    <Compile Include="TaskSeqTaskExtensions.fs" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\FSharp.Control.Async2\FSharp.Control.Async2.fsproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="TASKSEQ-LICENSE.txt" Pack="true" PackagePath="" />
+    <None Include="ASYNCSEQ-LICENSE.txt" Pack="true" PackagePath="" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net11.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <LangVersion>preview</LangVersion>
+    <UseMicrosoftTestingPlatformRunner>true</UseMicrosoftTestingPlatformRunner>
+    <AssemblyName>FSharp.Control.AsyncSeq2.Tests</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="AsyncSeq2Tests.fs" />
+    <Compile Include="AsyncSeq2AdditionalTests.fs" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="xunit.v3.mtp-v2" Version="3.2.2" />
+    <PackageReference Include="xunit.v3.runner.console" Version="3.2.2" />
+    <PackageReference Include="xunit.v3.common" Version="3.2.2" />
+    <PackageReference Include="xunit.v3.assert" Version="3.2.2" />
+    <PackageReference Include="xunit.v3.extensibility.core" Version="3.2.2" GeneratePathProperty="true" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\FSharp.Control.AsyncSeq2\FSharp.Control.AsyncSeq2.fsproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <Reference Include="xunit.v3.core" HintPath="$(Pkgxunit_v3_extensibility_core)\lib\netstandard2.0\xunit.v3.core.dll" />
+  </ItemGroup>
+</Project>
