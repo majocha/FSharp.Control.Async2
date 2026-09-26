@@ -60,8 +60,6 @@ module Helpers =
 
 open Helpers
 
-// Multiple tests affect global state via Async2.CancelDefaultToken
-[<Collection(nameof FSharp.Test.NotThreadSafeResourceCollection)>]
 type AsyncType() =
 
     let ignoreSynchCtx f =
@@ -271,23 +269,6 @@ type AsyncType() =
         Assert.True(exceptionThrown)
 
     [<Fact>]
-    member _.CancellationPropagatesToTask () =
-        let ewh = new ManualResetEvent(false)
-        let a = async2 {
-                ewh.Set() |> Assert.True
-                while true do ()
-            }
-        let t = Async2.StartAsTask a
-        ewh.WaitOne() |> Assert.True
-        Async2.CancelDefaultToken ()
-        let mutable exceptionThrown = false
-        try
-            verifyTaskCompletion t
-        with e -> exceptionThrown <- true
-        Assert.True(exceptionThrown)
-        Assert.True(t.IsCanceled)
-
-    [<Fact>]
     member _.CancellationPropagatesToGroup () =
         let ewh = new ManualResetEvent(false)
         let mutable cancelled = false
@@ -343,21 +324,6 @@ type AsyncType() =
             e -> exceptionThrown <- true
         Assert.True(t.IsFaulted)
         Assert.True(exceptionThrown)
-
-    [<Fact>]
-    member _.CancellationPropagatesToImmediateTask () =
-        let a = async2 {
-                while true do
-                    do! Async2.Sleep 100
-            }
-        let t = Async2.StartImmediateAsTask a
-        Async2.CancelDefaultToken ()
-        let mutable exceptionThrown = false
-        try
-            t.Wait()
-        with e -> exceptionThrown <- true
-        Assert.True(exceptionThrown)
-        Assert.True(t.IsCanceled)
 
     [<Fact>]
     member _.CancellationPropagatesToGroupImmediate () =
@@ -792,6 +758,41 @@ type AsyncType() =
         }
         Assert.True(asyncWaitImm a)
 #endif
+
+[<Collection(nameof FSharp.Test.NotThreadSafeResourceCollection)>]
+type AsyncTypeCancelDefaultToken() =
+
+    [<Fact>]
+    member _.CancellationPropagatesToTask () =
+        let ewh = new ManualResetEvent(false)
+        let a = async2 {
+                ewh.Set() |> Assert.True
+                while true do ()
+            }
+        let t = Async2.StartAsTask a
+        ewh.WaitOne() |> Assert.True
+        Async2.CancelDefaultToken ()
+        let mutable exceptionThrown = false
+        try
+            verifyTaskCompletion t
+        with e -> exceptionThrown <- true
+        Assert.True(exceptionThrown)
+        Assert.True(t.IsCanceled)
+
+    [<Fact>]
+    member _.CancellationPropagatesToImmediateTask () =
+        let a = async2 {
+                while true do
+                    do! Async2.Sleep 100
+            }
+        let t = Async2.StartImmediateAsTask a
+        Async2.CancelDefaultToken ()
+        let mutable exceptionThrown = false
+        try
+            t.Wait()
+        with e -> exceptionThrown <- true
+        Assert.True(exceptionThrown)
+        Assert.True(t.IsCanceled)
 
 module AsyncAwaitTaskLikeTests =
 
