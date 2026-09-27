@@ -23,6 +23,20 @@ module AsyncCompilerRegressionTests =
         Assert.Equal([| 27; 27; 27; 27 |], result)
 
     [<Fact>]
+    let ``StartChild starts before its result is awaited`` () =
+        let started = TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+        let child =
+            async2 {
+                let! running = Async2.StartChild(async2 {
+                    started.SetResult(())
+                    return 42
+                })
+                do! started.Task.WaitAsync(TimeSpan.FromSeconds 2.0)
+                return! running
+            }
+        Assert.Equal(42, Async2.RunSynchronously child)
+
+    [<Fact>]
     let ``Joining StartChild propagates a sibling failure`` () =
         let join (first: Async2<'T>) (second: Async2<'U>) =
             async2 {

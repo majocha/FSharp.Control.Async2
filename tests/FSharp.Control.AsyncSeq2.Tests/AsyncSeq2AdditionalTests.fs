@@ -732,3 +732,16 @@ let ``ported tail and split operations dispose after their remainder`` () =
     Assert.False(splitDisposed)
     Assert.Equal<int>([| 2; 3 |], drain rest)
     Assert.True(splitDisposed)
+
+[<Fact>]
+let ``blocking sequence cancels on early disposal but not completion`` () =
+    let mutable cancellations = 0
+    let source = asyncSeq2 {
+        use! _registration = Async2.OnCancel(fun () -> cancellations <- cancellations + 1)
+        yield 1
+        yield 2
+    }
+    Assert.Equal<int>([| 1; 2 |], AsyncSeq2.toBlockingSeq source |> Seq.toArray)
+    Assert.Equal(0, cancellations)
+    Assert.Equal<int>([| 1 |], AsyncSeq2.toBlockingSeq source |> Seq.take 1 |> Seq.toArray)
+    Assert.Equal(1, cancellations)

@@ -11,6 +11,7 @@
   <ItemGroup>
     <Compile Include="AsyncSeq2Tests.fs" />
     <Compile Include="AsyncSeq2AdditionalTests.fs" />
+    <Compile Include="AsyncSeq2UpstreamTests.fs" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="xunit.v3.mtp-v2" Version="3.2.2" />
