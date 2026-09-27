@@ -156,14 +156,20 @@ module AsyncSeq2OperationExtensions =
             Internal.checkNonNull (nameof source) source
 
             seq {
-
-                let e = source.GetAsyncEnumerator CancellationToken.None
+                use cts = new CancellationTokenSource()
+                let e = source.GetAsyncEnumerator cts.Token
+                let mutable completed = false
 
                 try
-                    while (let vt = e.MoveNextAsync() in if vt.IsCompleted then vt.Result else vt.AsTask().Result) do
-                        yield e.Current
+                    while not completed do
+                        let next = e.MoveNextAsync().GetAwaiter().GetResult()
+                        if next then yield e.Current
+                        else completed <- true
                 finally
-                    e.DisposeAsync().AsTask().Wait()
+                    try
+                        if not completed then cts.Cancel()
+                    finally
+                        e.DisposeAsync().AsTask().GetAwaiter().GetResult()
             }
 
         static member toArrayAsync source = AsyncSeq2.toArray source
