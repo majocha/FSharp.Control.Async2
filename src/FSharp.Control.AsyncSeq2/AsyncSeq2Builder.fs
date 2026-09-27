@@ -9,6 +9,7 @@ open System.Runtime.CompilerServices
 open System.Threading
 open System.Threading.Tasks
 open Microsoft.FSharp.Core.CompilerServices
+open Microsoft.FSharp.Core.CompilerServices.StateMachineHelpers
 
 /// An asynchronous sequence, compatible with IAsyncEnumerable<'T>.
 type AsyncSeq2<'T> = IAsyncEnumerable<'T>
@@ -48,7 +49,7 @@ type AsyncSeq2Builder() =
 
     member inline this.For(source: IAsyncEnumerable<'U>, [<InlineIfLambda>] body: 'U -> seq<'T>) =
         Seq.delay (fun () ->
-            let enumerator = source.GetAsyncEnumerator(StateMachineHelpers.__runtimeAsyncSequenceCancellationToken())
+            let enumerator = source.GetAsyncEnumerator(__runtimeAsyncSequenceCancellationToken())
 
             this.Using(
                 enumerator,
@@ -69,10 +70,10 @@ type AsyncSeq2Builder() =
         continuation (source.Invoke())
 
     member inline _.Bind([<InlineIfLambda>] source: Async2BuilderSources.Cold<'U>, [<InlineIfLambda>] continuation: 'U -> seq<'T>) =
-        continuation (source.Invoke(StateMachineHelpers.__runtimeAsyncSequenceCancellationToken()))
+        continuation (source.Invoke(__runtimeAsyncSequenceCancellationToken()))
 
     member inline _.Run([<InlineIfLambda>] recipe: unit -> seq<'T>) : AsyncSeq2<'T> =
-        StateMachineHelpers.__runtimeAsyncSequence recipe
+        __runtimeAsyncSequence recipe
 
     member inline _.Source(computation: Async2<'T>) =
         Async2BuilderSources.Cold(fun ct -> computation.StartTrampolined ct |> AsyncHelpers.Await)
