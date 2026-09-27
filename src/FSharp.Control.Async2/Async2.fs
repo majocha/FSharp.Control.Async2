@@ -192,8 +192,9 @@ type Async2 =
         : Async2<Async2<'T>> =
             async2 {
                 let! ct = Async2.CancellationToken
+                let started = computation |> startOnThreadPool ct
                 return async2 {
-                    return! computation |> startOnThreadPool ct
+                    return! started
                 }
             }
 
