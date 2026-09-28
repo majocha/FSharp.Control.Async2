@@ -19,21 +19,21 @@ open Microsoft.FSharp.Control.AsyncSeq2Implementation
 
 [<Fact>]
 let ``CE taskSeqDynamic empty sequence`` () = task {
-    let ts = taskSeqDynamic { () }
+    let ts = asyncSeq2 { () }
     let! data = ts |> ColdTask.toListAsync
     data |> should be Empty
 }
 
 [<Fact>]
 let ``CE taskSeqDynamic single yield`` () = task {
-    let ts = taskSeqDynamic { yield 42 }
+    let ts = asyncSeq2 { yield 42 }
     let! data = ts |> ColdTask.toListAsync
     data |> should equal [ 42 ]
 }
 
 [<Fact>]
 let ``CE taskSeqDynamic multiple yields`` () = task {
-    let ts = taskSeqDynamic {
+    let ts = asyncSeq2 {
         yield 1
         yield 2
         yield 3
@@ -45,7 +45,7 @@ let ``CE taskSeqDynamic multiple yields`` () = task {
 
 [<Fact>]
 let ``CE taskSeqDynamic yield with for loop`` () = task {
-    let ts = taskSeqDynamic {
+    let ts = asyncSeq2 {
         for i in 1..5 do
             yield i
     }
@@ -56,7 +56,7 @@ let ``CE taskSeqDynamic yield with for loop`` () = task {
 
 [<Fact>]
 let ``CE taskSeqDynamic yield with async task bind`` () = task {
-    let ts = taskSeqDynamic {
+    let ts = asyncSeq2 {
         let! x = task { return 10 }
         yield x
         let! y = task { return 20 }
@@ -69,19 +69,19 @@ let ``CE taskSeqDynamic yield with async task bind`` () = task {
 
 [<Fact>]
 let ``CE taskSeqDynamic yield from seq`` () = task {
-    let ts = taskSeqDynamic { yield! [ 1; 2; 3 ] }
+    let ts = asyncSeq2 { yield! [ 1; 2; 3 ] }
     let! data = ts |> ColdTask.toListAsync
     data |> should equal [ 1; 2; 3 ]
 }
 
 [<Fact>]
 let ``CE taskSeqDynamic yield from another taskSeqDynamic`` () = task {
-    let inner = taskSeqDynamic {
+    let inner = asyncSeq2 {
         yield 1
         yield 2
     }
 
-    let ts = taskSeqDynamic {
+    let ts = asyncSeq2 {
         yield! inner
         yield 3
     }
@@ -97,14 +97,14 @@ let ``CE taskSeqDynamic yield from asyncSeq2`` () = task {
         yield 2
     }
 
-    let ts = taskSeqDynamic { yield! inner }
+    let ts = asyncSeq2 { yield! inner }
     let! data = ts |> ColdTask.toListAsync
     data |> should equal [ 1; 2 ]
 }
 
 [<Fact>]
 let ``CE taskSeqDynamic with tryWith`` () = task {
-    let ts = taskSeqDynamic {
+    let ts = asyncSeq2 {
         try
             yield 1
             yield 2
@@ -118,7 +118,7 @@ let ``CE taskSeqDynamic with tryWith`` () = task {
 
 [<Fact>]
 let ``CE taskSeqDynamic with tryWith catching exception`` () = task {
-    let ts = taskSeqDynamic {
+    let ts = asyncSeq2 {
         try
             yield 1
             raise (InvalidOperationException "test")
@@ -135,7 +135,7 @@ let ``CE taskSeqDynamic with tryWith catching exception`` () = task {
 let ``CE taskSeqDynamic with tryFinally`` () = task {
     let mutable finallyCalled = false
 
-    let ts = taskSeqDynamic {
+    let ts = asyncSeq2 {
         try
             yield 1
             yield 2
@@ -157,7 +157,7 @@ let ``CE taskSeqDynamic with use`` () = task {
             member _.Dispose() = disposed <- true
         }
 
-    let ts = taskSeqDynamic {
+    let ts = asyncSeq2 {
         use _d = mkDisposable ()
         yield 42
     }
@@ -169,7 +169,7 @@ let ``CE taskSeqDynamic with use`` () = task {
 
 [<Fact>]
 let ``CE taskSeqDynamic supports re-enumeration`` () = task {
-    let ts = taskSeqDynamic {
+    let ts = asyncSeq2 {
         yield 1
         yield 2
         yield 3
@@ -183,7 +183,7 @@ let ``CE taskSeqDynamic supports re-enumeration`` () = task {
 
 [<Fact>]
 let ``CE taskSeqDynamic multiple re-enumerations produce same result`` () = task {
-    let ts = taskSeqDynamic {
+    let ts = asyncSeq2 {
         for i in 1..10 do
             yield i
     }
@@ -198,7 +198,7 @@ let ``CE taskSeqDynamic with cancellation`` () = task {
     use cts = new CancellationTokenSource()
     cts.Cancel()
 
-    let ts = taskSeqDynamic {
+    let ts = asyncSeq2 {
         yield 1
         yield 2
         yield 3
@@ -220,7 +220,7 @@ let ``CE taskSeqDynamic with cancellation`` () = task {
 
 [<Fact>]
 let ``CE taskSeqDynamic with large for loop`` () = task {
-    let ts = taskSeqDynamic {
+    let ts = asyncSeq2 {
         for i in 1..1000 do
             yield i
     }
@@ -232,7 +232,7 @@ let ``CE taskSeqDynamic with large for loop`` () = task {
 
 [<Fact>]
 let ``CE taskSeqDynamic with nested for loops`` () = task {
-    let ts = taskSeqDynamic {
+    let ts = asyncSeq2 {
         for i in 1..3 do
             for j in 1..3 do
                 yield i * 10 + j
@@ -250,7 +250,7 @@ let ``CE taskSeqDynamic with nested for loops`` () = task {
 
 [<Fact>]
 let ``CE taskSeqDynamic with async value task bind`` () = task {
-    let ts = taskSeqDynamic {
+    let ts = asyncSeq2 {
         let! x = System.Threading.Tasks.ValueTask.FromResult(7)
         yield x
     }
@@ -261,7 +261,7 @@ let ``CE taskSeqDynamic with async value task bind`` () = task {
 
 [<Fact>]
 let ``CE taskSeqDynamic with Async2 bind`` () = task {
-    let ts = taskSeqDynamic {
+    let ts = asyncSeq2 {
         let! x = async2 { return 99 }
         yield x
     }
@@ -273,7 +273,7 @@ let ``CE taskSeqDynamic with Async2 bind`` () = task {
 [<Fact>]
 let ``CE taskSeqDynamic forwards cancellation to Async2 binding`` () = task {
     use cts = new CancellationTokenSource()
-    let source = taskSeqDynamic {
+    let source = asyncSeq2 {
         let! token = Async2.CancellationToken
         yield token
     }
@@ -287,7 +287,7 @@ let ``CE taskSeqDynamic forwards cancellation to Async2 binding`` () = task {
 let ``CE taskSeqDynamic is IAsyncEnumerable`` () = task {
     // In compiled mode this uses the static path (returns AsyncSeq2<_,_>),
     // in FSI it returns TaskSeqDynamic<_>. Both implement IAsyncEnumerable<int>.
-    let ts = taskSeqDynamic { yield 1 }
+    let ts = asyncSeq2 { yield 1 }
     let! data = ts |> ColdTask.toListAsync
     data |> should equal [ 1 ]
 }
@@ -296,7 +296,7 @@ let ``CE taskSeqDynamic is IAsyncEnumerable`` () = task {
 let ``CE taskSeqDynamic empty produces no values`` () = task {
     let mutable count = 0
 
-    let ts = taskSeqDynamic { () }
+    let ts = asyncSeq2 { () }
 
     let e = ts.GetAsyncEnumerator(CancellationToken.None)
 
@@ -312,7 +312,7 @@ let ``CE taskSeqDynamic empty produces no values`` () = task {
 
 [<Fact>]
 let ``CE taskSeqDynamic with while loop`` () = task {
-    let ts = taskSeqDynamic {
+    let ts = asyncSeq2 {
         let mutable i = 0
 
         while i < 5 do
@@ -326,12 +326,12 @@ let ``CE taskSeqDynamic with while loop`` () = task {
 
 [<Fact>]
 let ``CE taskSeqDynamic is same type as AsyncSeq2`` () =
-    let ts: AsyncSeq2<int> = taskSeqDynamic { yield 1 }
+    let ts: AsyncSeq2<int> = asyncSeq2 { yield 1 }
     ts |> should not' (be Null)
 
 [<Fact>]
 let ``CE taskSeqDynamic with several yield!`` () = task {
-    let tskSeq = taskSeqDynamic {
+    let tskSeq = asyncSeq2 {
         yield! Gen.sideEffectTaskSeq 10
         yield! Gen.sideEffectTaskSeq 5
     }
