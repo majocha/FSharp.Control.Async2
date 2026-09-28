@@ -1,5 +1,7 @@
 namespace Microsoft.FSharp.Control
 
+type AsyncSeq2<'T> = System.Collections.Generic.IAsyncEnumerable<'T>
+
 /// Operations on asynchronous sequences. Terminal operations return Async2 and
 /// use the cancellation token supplied when the computation is started.
 [<Sealed; AbstractClass>]

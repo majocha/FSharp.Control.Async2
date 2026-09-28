@@ -280,11 +280,12 @@ let ``parallel map preserves order and honors its concurrency limit`` () = task 
     let firstTwo = TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
     let mutable active = 0
     let mutable peak = 0
+    let gate = obj ()
     let mapping value = async2 {
         let! token = Async2.CancellationToken
         Assert.True(token.CanBeCanceled)
         let running = Interlocked.Increment(&active)
-        peak <- max peak running
+        lock gate (fun () -> peak <- max peak running)
         if running = 2 then firstTwo.TrySetResult(()) |> ignore
         do! firstTwo.Task
         Interlocked.Decrement(&active) |> ignore

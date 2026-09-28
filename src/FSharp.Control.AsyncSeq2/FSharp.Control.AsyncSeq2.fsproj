@@ -8,7 +8,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="AsyncSeq2Builder.fs" />
-    <Compile Include="TaskSeqRuntimeTaskBuilder.fs" />
+    <Compile Include="RuntimeTaskBuilder.fs" />
     <Compile Include="TaskSeqUtilities.fs" />
     <Compile Include="AlgorithmSeqBuilder.fs" />
     <Compile Include="AsyncSeq2Internal.fs" />

@@ -3,6 +3,9 @@ namespace Microsoft.FSharp.Control
 open System
 open System.Collections.Generic
 
+type AsyncSeq2<'T> = IAsyncEnumerable<'T>
+
+
 /// Operations on asynchronous sequences, returning Async2 for terminal operations.
 [<Sealed; AbstractClass>]
 type AsyncSeq2 private () =
@@ -10,7 +13,7 @@ type AsyncSeq2 private () =
     static member private CheckSource(source: AsyncSeq2<'T>) =
         if isNull source then nullArg (nameof source)
 
-    static member empty<'T> () : AsyncSeq2<'T> = asyncSeq2 { () }
+    static member empty<'T> () : AsyncSeq2<'T> = asyncSeq2 { }
 
     static member singleton(value: 'T) : AsyncSeq2<'T> = asyncSeq2 { yield value }
 
