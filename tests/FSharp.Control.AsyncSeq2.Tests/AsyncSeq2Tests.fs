@@ -96,7 +96,7 @@ let ``async2 binding observes enumerator token`` () = task {
 [<Fact>]
 let ``algorithmSeq Async2 binding observes enumerator token`` () = task {
     use cts = new CancellationTokenSource()
-    let source = algorithmSeq {
+    let source = asyncSeq2 {
         let! token = Async2.CancellationToken
         yield token
     }

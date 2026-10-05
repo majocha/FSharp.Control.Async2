@@ -8,6 +8,8 @@ open System.Threading.Tasks
 open Microsoft.FSharp.Core.CompilerServices
 open System.Runtime.CompilerServices
 
+type AsyncSeq2<'T> = IAsyncEnumerable<'T>
+
 #nowarn "57"
 #nowarn "1204"
 
@@ -161,23 +163,23 @@ module internal AsyncSeq2Internal =
     let replicate count value =
         raiseCannotBeNegative (nameof count) count
 
-        algorithmSeq {
+        asyncSeq2 {
             for _ in 1..count do
                 yield value
         }
 
-    let replicateInfinite value = algorithmSeq {
+    let replicateInfinite value = asyncSeq2 {
         while true do
             yield value
     }
 
-    let replicateInfiniteAsync (computation: unit -> #Task<'T>) = algorithmSeq {
+    let replicateInfiniteAsync (computation: unit -> #Task<'T>) = asyncSeq2 {
         while true do
             let! value = computation ()
             yield value
     }
 
-    let replicateUntilNoneAsync (computation: unit -> #Task<'T option>) = algorithmSeq {
+    let replicateUntilNoneAsync (computation: unit -> #Task<'T option>) = asyncSeq2 {
         let mutable go = true
 
         while go do
@@ -324,7 +326,7 @@ module internal AsyncSeq2Internal =
         )
 
 
-    let init count initializer = algorithmSeq {
+    let init count initializer = asyncSeq2 {
         let mutable i = 0
 
         let count =
@@ -349,7 +351,7 @@ module internal AsyncSeq2Internal =
 
     }
 
-    let unfold generator state = algorithmSeq {
+    let unfold generator state = asyncSeq2 {
         let mutable go = true
         let mutable currentState = state
 
@@ -361,7 +363,7 @@ module internal AsyncSeq2Internal =
                 currentState <- nextState
     }
 
-    let unfoldAsync generator state = algorithmSeq {
+    let unfoldAsync generator state = asyncSeq2 {
         let mutable go = true
         let mutable currentState = state
 
@@ -464,7 +466,7 @@ module internal AsyncSeq2Internal =
         checkNonNull (nameof source) source
 
         match folder with
-        | FolderAction folder -> algorithmSeq {
+        | FolderAction folder -> asyncSeq2 {
             let mutable state = initial
             yield state
 
@@ -473,7 +475,7 @@ module internal AsyncSeq2Internal =
                 yield state
           }
 
-        | AsyncFolderAction folder -> algorithmSeq {
+        | AsyncFolderAction folder -> asyncSeq2 {
             let mutable state = initial
             yield state
 
@@ -543,7 +545,7 @@ module internal AsyncSeq2Internal =
     let threadState (folder: 'State -> 'T -> 'U * 'State) initial (source: AsyncSeq2<'T>) : AsyncSeq2<'U> =
         checkNonNull (nameof source) source
 
-        algorithmSeq {
+        asyncSeq2 {
             let mutable state = initial
 
             for item in source do
@@ -555,7 +557,7 @@ module internal AsyncSeq2Internal =
     let threadStateAsync (folder: 'State -> 'T -> #Task<'U * 'State>) initial (source: AsyncSeq2<'T>) : AsyncSeq2<'U> =
         checkNonNull (nameof source) source
 
-        algorithmSeq {
+        asyncSeq2 {
             let mutable state = initial
 
             for item in source do
@@ -586,7 +588,7 @@ module internal AsyncSeq2Internal =
         checkNonNull (nameof source) source
 
         match mapper with
-        | CountableAction mapper -> algorithmSeq {
+        | CountableAction mapper -> asyncSeq2 {
             let mutable i = 0
 
             for c in source do
@@ -594,12 +596,12 @@ module internal AsyncSeq2Internal =
                 i <- i + 1
           }
 
-        | SimpleAction mapper -> algorithmSeq {
+        | SimpleAction mapper -> asyncSeq2 {
             for c in source do
                 yield mapper c
           }
 
-        | AsyncCountableAction mapper -> algorithmSeq {
+        | AsyncCountableAction mapper -> asyncSeq2 {
             let mutable i = 0
 
             for c in source do
@@ -608,7 +610,7 @@ module internal AsyncSeq2Internal =
                 i <- i + 1
           }
 
-        | AsyncSimpleAction mapper -> algorithmSeq {
+        | AsyncSimpleAction mapper -> asyncSeq2 {
             for c in source do
                 let! result = mapper c
                 yield result
@@ -618,7 +620,7 @@ module internal AsyncSeq2Internal =
         checkNonNull (nameof source1) source1
         checkNonNull (nameof source2) source2
 
-        algorithmSeq {
+        asyncSeq2 {
             use e1 = source1.GetAsyncEnumerator(FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncSequenceCancellationToken())
             use e2 = source2.GetAsyncEnumerator(FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncSequenceCancellationToken())
             let mutable go = true
@@ -638,7 +640,7 @@ module internal AsyncSeq2Internal =
         checkNonNull (nameof source2) source2
         checkNonNull (nameof source3) source3
 
-        algorithmSeq {
+        asyncSeq2 {
             use e1 = source1.GetAsyncEnumerator(FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncSequenceCancellationToken())
             use e2 = source2.GetAsyncEnumerator(FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncSequenceCancellationToken())
             use e3 = source3.GetAsyncEnumerator(FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncSequenceCancellationToken())
@@ -660,7 +662,7 @@ module internal AsyncSeq2Internal =
         checkNonNull (nameof source1) source1
         checkNonNull (nameof source2) source2
 
-        algorithmSeq {
+        asyncSeq2 {
             use e1 = source1.GetAsyncEnumerator(FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncSequenceCancellationToken())
             use e2 = source2.GetAsyncEnumerator(FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncSequenceCancellationToken())
             let mutable go = true
@@ -679,7 +681,7 @@ module internal AsyncSeq2Internal =
         checkNonNull (nameof source1) source1
         checkNonNull (nameof source2) source2
 
-        algorithmSeq {
+        asyncSeq2 {
             use e1 = source1.GetAsyncEnumerator(FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncSequenceCancellationToken())
             use e2 = source2.GetAsyncEnumerator(FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncSequenceCancellationToken())
             let mutable go = true
@@ -700,7 +702,7 @@ module internal AsyncSeq2Internal =
         checkNonNull (nameof source2) source2
         checkNonNull (nameof source3) source3
 
-        algorithmSeq {
+        asyncSeq2 {
             use e1 = source1.GetAsyncEnumerator(FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncSequenceCancellationToken())
             use e2 = source2.GetAsyncEnumerator(FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncSequenceCancellationToken())
             use e3 = source3.GetAsyncEnumerator(FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncSequenceCancellationToken())
@@ -723,7 +725,7 @@ module internal AsyncSeq2Internal =
         checkNonNull (nameof source2) source2
         checkNonNull (nameof source3) source3
 
-        algorithmSeq {
+        asyncSeq2 {
             use e1 = source1.GetAsyncEnumerator(FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncSequenceCancellationToken())
             use e2 = source2.GetAsyncEnumerator(FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncSequenceCancellationToken())
             use e3 = source3.GetAsyncEnumerator(FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncSequenceCancellationToken())
@@ -781,7 +783,7 @@ module internal AsyncSeq2Internal =
     let collect (binder: _ -> #IAsyncEnumerable<_>) (source: AsyncSeq2<_>) =
         checkNonNull (nameof source) source
 
-        algorithmSeq {
+        asyncSeq2 {
             for c in source do
                 yield! binder c :> IAsyncEnumerable<_>
         }
@@ -789,7 +791,7 @@ module internal AsyncSeq2Internal =
     let collectSeq (binder: _ -> #seq<_>) (source: AsyncSeq2<_>) =
         checkNonNull (nameof source) source
 
-        algorithmSeq {
+        asyncSeq2 {
             for c in source do
                 yield! binder c :> seq<_>
         }
@@ -797,7 +799,7 @@ module internal AsyncSeq2Internal =
     let collectAsync (binder: _ -> #Task<#IAsyncEnumerable<_>>) (source: AsyncSeq2<_>) =
         checkNonNull (nameof source) source
 
-        algorithmSeq {
+        asyncSeq2 {
             for c in source do
                 let! result = binder c
                 yield! result :> IAsyncEnumerable<_>
@@ -806,7 +808,7 @@ module internal AsyncSeq2Internal =
     let collectSeqAsync (binder: _ -> #Task<#seq<_>>) (source: AsyncSeq2<_>) =
         checkNonNull (nameof source) source
 
-        algorithmSeq {
+        asyncSeq2 {
             for c in source do
                 let! result = binder c
                 yield! result :> seq<_>
@@ -852,7 +854,7 @@ module internal AsyncSeq2Internal =
                     AsyncHelpers.Await (e.DisposeAsync())
                     raise error
             if next then
-                Some (algorithmSeq {
+                Some (asyncSeq2 {
                     use e = e
                     while AsyncHelpers.Await (e.MoveNextAsync()) do
                         yield e.Current
@@ -894,7 +896,7 @@ module internal AsyncSeq2Internal =
                 AsyncHelpers.Await (e.DisposeAsync())
                 raise error
             if go then
-                let rest = algorithmSeq {
+                let rest = asyncSeq2 {
                     use e = e
                     while AsyncHelpers.Await (e.MoveNextAsync()) do
                         yield e.Current
@@ -1015,7 +1017,7 @@ module internal AsyncSeq2Internal =
     let choose chooser (source: AsyncSeq2<_>) =
         checkNonNull (nameof source) source
 
-        algorithmSeq {
+        asyncSeq2 {
 
             match chooser with
             | TryPick picker ->
@@ -1034,7 +1036,7 @@ module internal AsyncSeq2Internal =
     let chooseV chooser (source: AsyncSeq2<_>) =
         checkNonNull (nameof source) source
 
-        algorithmSeq {
+        asyncSeq2 {
 
             match chooser with
             | TryPickV picker ->
@@ -1053,7 +1055,7 @@ module internal AsyncSeq2Internal =
     let filter predicate (source: AsyncSeq2<_>) =
         checkNonNull (nameof source) source
 
-        algorithmSeq {
+        asyncSeq2 {
             match predicate with
             | Predicate syncPredicate ->
                 for item in source do
@@ -1070,7 +1072,7 @@ module internal AsyncSeq2Internal =
     let distinct (source: AsyncSeq2<_>) =
         checkNonNull (nameof source) source
 
-        algorithmSeq {
+        asyncSeq2 {
             // only create hashset when we start iterating; sequential so plain HashSet suffices
             let seen = HashSet<_>(HashIdentity.Structural)
 
@@ -1082,7 +1084,7 @@ module internal AsyncSeq2Internal =
     let distinctBy (projection: _ -> _) (source: AsyncSeq2<_>) =
         checkNonNull (nameof source) source
 
-        algorithmSeq {
+        asyncSeq2 {
             let seen = HashSet<_>(HashIdentity.Structural)
 
             for item in source do
@@ -1093,7 +1095,7 @@ module internal AsyncSeq2Internal =
     let distinctByAsync (projection: _ -> #Task<_>) (source: AsyncSeq2<_>) =
         checkNonNull (nameof source) source
 
-        algorithmSeq {
+        asyncSeq2 {
             let seen = HashSet<_>(HashIdentity.Structural)
 
             for item in source do
@@ -1113,7 +1115,7 @@ module internal AsyncSeq2Internal =
             if count = 0 then
                 source
             else
-                algorithmSeq {
+                asyncSeq2 {
                     use e = source.GetAsyncEnumerator(FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncSequenceCancellationToken())
 
                     for _ in 1..count do
@@ -1131,7 +1133,7 @@ module internal AsyncSeq2Internal =
             if count = 0 then
                 source
             else
-                algorithmSeq {
+                asyncSeq2 {
                     use e = source.GetAsyncEnumerator(FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncSequenceCancellationToken())
                     let mutable i = 0
                     let mutable cont = true
@@ -1153,7 +1155,7 @@ module internal AsyncSeq2Internal =
             if count = 0 then
                 empty
             else
-                algorithmSeq {
+                asyncSeq2 {
                     use e = source.GetAsyncEnumerator(FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncSequenceCancellationToken())
 
                     for _ in count .. -1 .. 1 do
@@ -1170,7 +1172,7 @@ module internal AsyncSeq2Internal =
             if count = 0 then
                 empty
             else
-                algorithmSeq {
+                asyncSeq2 {
                     use e = source.GetAsyncEnumerator(FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncSequenceCancellationToken())
                     let mutable yielded = 0
                     let mutable cont = true
@@ -1190,7 +1192,7 @@ module internal AsyncSeq2Internal =
     let takeWhile isInclusive predicate (source: AsyncSeq2<_>) =
         checkNonNull (nameof source) source
 
-        algorithmSeq {
+        asyncSeq2 {
             use e = source.GetAsyncEnumerator(FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncSequenceCancellationToken())
             let! notEmpty = e.MoveNextAsync()
             let mutable hasMore = notEmpty
@@ -1224,7 +1226,7 @@ module internal AsyncSeq2Internal =
     let skipWhile isInclusive predicate (source: AsyncSeq2<_>) =
         checkNonNull (nameof source) source
 
-        algorithmSeq {
+        asyncSeq2 {
             use e = source.GetAsyncEnumerator(FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncSequenceCancellationToken())
             let! notEmpty = e.MoveNextAsync()
             let mutable hasMore = notEmpty
@@ -1269,7 +1271,7 @@ module internal AsyncSeq2Internal =
 
         raiseCannotBeNegative (nameof index) index
 
-        algorithmSeq {
+        asyncSeq2 {
             let mutable i = 0
 
             for item in source do
@@ -1295,7 +1297,7 @@ module internal AsyncSeq2Internal =
         checkNonNull (nameof source) source
         raiseCannotBeNegative (nameof index) index
 
-        algorithmSeq {
+        asyncSeq2 {
             let mutable i = 0
 
             for item in source do
@@ -1313,7 +1315,7 @@ module internal AsyncSeq2Internal =
         checkNonNull (nameof source) source
         raiseCannotBeNegative (nameof index) index
 
-        algorithmSeq {
+        asyncSeq2 {
             let mutable i = 0
             let indexEnd = index + count
 
@@ -1332,7 +1334,7 @@ module internal AsyncSeq2Internal =
         checkNonNull (nameof source) source
         raiseCannotBeNegative (nameof index) index
 
-        algorithmSeq {
+        asyncSeq2 {
             let mutable i = 0
 
             for item in source do
@@ -1352,7 +1354,7 @@ module internal AsyncSeq2Internal =
         checkNonNull (nameof source) source
         checkNonNull (nameof itemsToExclude) itemsToExclude
 
-        algorithmSeq {
+        asyncSeq2 {
             use e = source.GetAsyncEnumerator(FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncSequenceCancellationToken())
             let! hasFirst = e.MoveNextAsync()
 
@@ -1383,7 +1385,7 @@ module internal AsyncSeq2Internal =
         checkNonNull (nameof source) source
         checkNonNull (nameof itemsToExclude) itemsToExclude
 
-        algorithmSeq {
+        asyncSeq2 {
             use e = source.GetAsyncEnumerator(FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncSequenceCancellationToken())
             let! hasFirst = e.MoveNextAsync()
 
@@ -1408,7 +1410,7 @@ module internal AsyncSeq2Internal =
     let distinctUntilChanged (source: AsyncSeq2<_>) =
         checkNonNull (nameof source) source
 
-        algorithmSeq {
+        asyncSeq2 {
             use e = source.GetAsyncEnumerator(FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncSequenceCancellationToken())
             let! hasFirst = e.MoveNextAsync()
 
@@ -1427,7 +1429,7 @@ module internal AsyncSeq2Internal =
     let distinctUntilChangedWith (comparer: 'T -> 'T -> bool) (source: AsyncSeq2<_>) =
         checkNonNull (nameof source) source
 
-        algorithmSeq {
+        asyncSeq2 {
             use e = source.GetAsyncEnumerator(FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncSequenceCancellationToken())
             let! hasFirst = e.MoveNextAsync()
 
@@ -1446,7 +1448,7 @@ module internal AsyncSeq2Internal =
     let distinctUntilChangedWithAsync (comparer: 'T -> 'T -> #Task<bool>) (source: AsyncSeq2<_>) =
         checkNonNull (nameof source) source
 
-        algorithmSeq {
+        asyncSeq2 {
             use e = source.GetAsyncEnumerator(FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncSequenceCancellationToken())
             let! hasFirst = e.MoveNextAsync()
 
@@ -1466,7 +1468,7 @@ module internal AsyncSeq2Internal =
     let pairwise (source: AsyncSeq2<_>) =
         checkNonNull (nameof source) source
 
-        algorithmSeq {
+        asyncSeq2 {
             use e = source.GetAsyncEnumerator(FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncSequenceCancellationToken())
             let! hasFirst = e.MoveNextAsync()
 
@@ -1596,7 +1598,7 @@ module internal AsyncSeq2Internal =
 
         checkNonNull (nameof source) source
 
-        algorithmSeq {
+        asyncSeq2 {
             // Use a fixed-size array with a count index to avoid ResizeArray overhead.
             let buffer = Array.zeroCreate<'T> chunkSize
             let mutable count = 0
@@ -1617,7 +1619,7 @@ module internal AsyncSeq2Internal =
     let chunkBy (projection: 'T -> 'Key) (source: AsyncSeq2<'T>) : AsyncSeq2<'Key * 'T[]> =
         checkNonNull (nameof source) source
 
-        algorithmSeq {
+        asyncSeq2 {
             let mutable maybeCurrentKey = ValueNone
             let mutable currentChunk = ResizeArray<'T>()
 
@@ -1645,7 +1647,7 @@ module internal AsyncSeq2Internal =
     let chunkByAsync (projection: 'T -> #Task<'Key>) (source: AsyncSeq2<'T>) : AsyncSeq2<'Key * 'T[]> =
         checkNonNull (nameof source) source
 
-        algorithmSeq {
+        asyncSeq2 {
             let mutable maybeCurrentKey = ValueNone
             let mutable currentChunk = ResizeArray<'T>()
 
@@ -1676,7 +1678,7 @@ module internal AsyncSeq2Internal =
 
         checkNonNull (nameof source) source
 
-        algorithmSeq {
+        asyncSeq2 {
             // Ring buffer: arr holds elements in circular order.
             // 'count' tracks total elements seen; count % windowSize is the next write position.
             let arr = Array.zeroCreate windowSize

@@ -210,12 +210,12 @@ module AsyncSeq2OperationExtensions =
         static member ofArray(source: 'T[]) =
             Internal.checkNonNull (nameof source) source
 
-            algorithmSeq {
+            asyncSeq2 {
                 for c in source do
                     yield c
             }
 
-        static member ofList(source: 'T list) = algorithmSeq {
+        static member ofList(source: 'T list) = asyncSeq2 {
             for c in source do
                 yield c
         }
@@ -223,7 +223,7 @@ module AsyncSeq2OperationExtensions =
         static member ofResizeArray(source: 'T ResizeArray) =
             Internal.checkNonNull (nameof source) source
 
-            algorithmSeq {
+            asyncSeq2 {
                 for c in source do
                     yield c
             }
@@ -231,13 +231,13 @@ module AsyncSeq2OperationExtensions =
         static member ofTaskSeq(source: #Task<'T> seq) =
             Internal.checkNonNull (nameof source) source
 
-            algorithmSeq {
+            asyncSeq2 {
                 for c in source do
                     let! c = c
                     yield c
             }
 
-        static member ofTaskList(source: #Task<'T> list) = algorithmSeq {
+        static member ofTaskList(source: #Task<'T> list) = asyncSeq2 {
             for c in source do
                 let! c = c
                 yield c
@@ -246,7 +246,7 @@ module AsyncSeq2OperationExtensions =
         static member ofTaskArray(source: #Task<'T> array) =
             Internal.checkNonNull (nameof source) source
 
-            algorithmSeq {
+            asyncSeq2 {
                 for c in source do
                     let! c = c
                     yield c
@@ -329,7 +329,7 @@ module AsyncSeq2OperationExtensions =
         static member concat(sources: AsyncSeq2<#AsyncSeq2<'T>>) =
             Internal.checkNonNull (nameof sources) sources
 
-            algorithmSeq {
+            asyncSeq2 {
                 for ts in sources do
                     // no null-check of inner taskseqs, similar to seq
                     yield! (ts :> AsyncSeq2<'T>)
@@ -338,7 +338,7 @@ module AsyncSeq2OperationExtensions =
         static member concat(sources: AsyncSeq2<'T seq>) = // NOTE: we cannot use flex types on two overloads
             Internal.checkNonNull (nameof sources) sources
 
-            algorithmSeq {
+            asyncSeq2 {
                 for ts in sources do
                     // no null-check of inner seqs, similar to seq
                     yield! ts
@@ -347,7 +347,7 @@ module AsyncSeq2OperationExtensions =
         static member concat(sources: AsyncSeq2<'T[]>) =
             Internal.checkNonNull (nameof sources) sources
 
-            algorithmSeq {
+            asyncSeq2 {
                 for ts in sources do
                     // no null-check of inner arrays, similar to seq
                     yield! ts
@@ -356,7 +356,7 @@ module AsyncSeq2OperationExtensions =
         static member concat(sources: AsyncSeq2<'T list>) =
             Internal.checkNonNull (nameof sources) sources
 
-            algorithmSeq {
+            asyncSeq2 {
                 for ts in sources do
                     // no null-check of inner lists, similar to seq
                     yield! ts
@@ -365,7 +365,7 @@ module AsyncSeq2OperationExtensions =
         static member concat(sources: AsyncSeq2<ResizeArray<'T>>) =
             Internal.checkNonNull (nameof sources) sources
 
-            algorithmSeq {
+            asyncSeq2 {
                 for ts in sources do
                     // no null-check of inner resize arrays, similar to seq
                     yield! ts
@@ -375,7 +375,7 @@ module AsyncSeq2OperationExtensions =
             Internal.checkNonNull (nameof source1) source1
             Internal.checkNonNull (nameof source2) source2
 
-            algorithmSeq {
+            asyncSeq2 {
                 yield! source1
                 yield! source2
             }
@@ -384,7 +384,7 @@ module AsyncSeq2OperationExtensions =
             Internal.checkNonNull (nameof source1) source1
             Internal.checkNonNull (nameof source2) source2
 
-            algorithmSeq {
+            asyncSeq2 {
                 yield! source1
                 yield! source2
             }
@@ -495,7 +495,7 @@ module AsyncSeq2OperationExtensions =
         static member indexed(source: AsyncSeq2<'T>) =
             Internal.checkNonNull (nameof source) source
 
-            algorithmSeq {
+            asyncSeq2 {
                 let mutable i = 0
 
                 for x in source do
