@@ -9,5 +9,6 @@
   <ItemGroup>
     <Compile Include="Async2Builder.fs" />
     <Compile Include="Async2.fs" />
+    <Compile Include="MailboxProcessor2.fs" />
   </ItemGroup>
 </Project>

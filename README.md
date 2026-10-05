@@ -8,6 +8,34 @@ The root `Directory.Build.props` selects the local F# compiler at `$(RuntimeAsyn
 
 The focused `AsyncType`, `AsyncModule`, and `AsyncModuleFunctions` suites are accompanied by direct xUnit ports of older compiler-library regressions. RuntimeAsync compiler-component tests are intentionally outside this project.
 
+## MailboxProcessor2
+
+`MailboxProcessor2<'Msg>` is an `async2`-native mailbox agent with `Post`,
+`Receive`, `TryReceive`, `Scan`, `TryScan`, reply channels, cancellation,
+`Start`, and `StartImmediate`. Its name and `AsyncReplyChannel2<'Reply>` keep
+it distinct from FSharp.Core's `MailboxProcessor` and `AsyncReplyChannel`.
+
+```fsharp
+type Message = | Add of int | Read of AsyncReplyChannel2<int>
+
+let counter =
+    MailboxProcessor2<Message>.Start(fun inbox ->
+        let rec loop total =
+            async2 {
+                match! inbox.Receive() with
+                | Add value -> return! loop (total + value)
+                | Read reply ->
+                    reply.Reply total
+                    return! loop total
+            }
+        loop 0)
+
+counter.Post(Add 42)
+let total =
+    counter.PostAndAsyncReply((fun reply -> Read reply))
+    |> Async2.RunSynchronously
+```
+
 ## AsyncSeq2
 
 `src/FSharp.Control.AsyncSeq2` remains a separate library referencing Async2,
