@@ -15,6 +15,11 @@ The focused `AsyncType`, `AsyncModule`, and `AsyncModuleFunctions` suites are ac
 `Start`, and `StartImmediate`. Its name and `AsyncReplyChannel2<'Reply>` keep
 it distinct from FSharp.Core's `MailboxProcessor` and `AsyncReplyChannel`.
 
+Its mailbox semantics follow FSharp.Core: only one reader operation may run
+at a time, asynchronous reply methods post their message when called, and
+`Dispose` clears the mailbox without canceling its body. Supply a cancellation
+token explicitly when cancellable infinite waits are required.
+
 ```fsharp
 type Message = | Add of int | Read of AsyncReplyChannel2<int>
 
