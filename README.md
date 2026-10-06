@@ -1,10 +1,58 @@
 # FSharp.Control.Async2
 
-A separate asynchronous computation expression and module, renamed to `Async2` and `async2` so it can be developed independently without conflicting with the built-in implementation.
+A separate asynchronous computation-expression library, named `Async2` and
+`async2` so it can be developed independently without conflicting with
+FSharp.Core's `Async` and `async`.
 
-The current implementation uses the preview runtime-async compiler feature. `Async2<'T>` is a named cold carrier whose start-time `CancellationToken` is passed to a runtime-async `Task<'T>` factory. The library targets `net11.0`; tests use xUnit v3 with the Microsoft Testing Platform runner.
+The implementation uses the preview runtime-async compiler feature.
+`Async2<'T>` is a cold carrier: its runtime-async `Task<'T>` factory receives
+the `CancellationToken` supplied when the computation is started. Both library
+projects target `net11.0`; the test projects use xUnit v3 with the Microsoft
+Testing Platform runner.
 
-The root `Directory.Build.props` selects the local F# compiler at `$(RuntimeAsyncBin)\fsc\Release\net11.0\fsc.dll` and references `$(RuntimeAsyncBin)\FSharp.Core\Release\net10.0\FSharp.Core.dll`, with `RuntimeAsyncBin` defaulting to `D:\source\fsharp\artifacts\bin`. Override `RuntimeAsyncBin` or provide `RuntimeAsyncBitsPath` when building against another local F# checkout.
+## Async2
+
+The core library provides the `async2 { ... }` computation expression and
+`Async2` operations for starting, composing, and awaiting asynchronous work.
+The builder accepts `Async2`, `Task`, `ValueTask`, and awaitable sources;
+`Async2.Sleep` and other cold operations observe the token used to start the
+computation.
+
+```fsharp
+open System.Threading
+open Microsoft.FSharp.Control
+
+let computation =
+    async2 {
+        do! Async2.Sleep 100
+        return 42
+    }
+
+use cancellation = new CancellationTokenSource()
+let result =
+    Async2.RunSynchronously(computation, cancellationToken = cancellation.Token)
+```
+
+`src/FSharp.Control.Async2` builds independently of the sequence library.
+`MailboxProcessor2<'Msg>` is also part of this core library; see its section
+below.
+
+## Build and tests
+
+The repository pins a .NET 11 preview SDK in `global.json` and uses a local F#
+compiler build with runtime-async support. The root `Directory.Build.props`
+selects `$(RuntimeAsyncBin)\fsc\Release\net11.0\fsc.dll` and references
+`$(RuntimeAsyncBin)\FSharp.Core\Release\net10.0\FSharp.Core.dll`.
+`RuntimeAsyncBin` defaults to `c:\dev\repos\fsharp\artifacts\bin`; override
+`RuntimeAsyncBin` or set `RuntimeAsyncBitsPath` to use artifacts from another
+local F# checkout.
+
+Build the solution and run its tests with:
+
+```sh
+dotnet build
+dotnet test
+```
 
 The focused `AsyncType`, `AsyncModule`, and `AsyncModuleFunctions` suites are accompanied by direct xUnit ports of older compiler-library regressions. RuntimeAsync compiler-component tests are intentionally outside this project.
 
