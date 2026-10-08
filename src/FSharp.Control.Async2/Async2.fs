@@ -70,6 +70,9 @@ module internal Async2RuntimeHelpers =
     let startOnThreadPool cancellationToken (computation: Async2<_>) =
         Task.Run<'T>(fun () -> computation.Start cancellationToken)
 
+    let startResultOnThreadPool cancellationToken (computation: Async2<'T>) =
+        Task.Run<Async2Result<'T>>(fun () -> computation.StartResultInIsolatedTrampoline cancellationToken)
+
     let startImmediate cancellationToken (computation: Async2<_>) =
         computation.StartInIsolatedTrampoline cancellationToken
 
@@ -171,15 +174,21 @@ type Async2 =
     static member TryCancelled
         (computation: Async2<'T>, compensation: OperationCanceledException -> unit)
         : Async2<'T> =
-        async2 {
-            let! ct = Async2.CancellationToken
-            try
-                return! computation
-            with
-            | :? OperationCanceledException as ex when ex.CancellationToken = ct ->
-                compensation ex
-                return Unchecked.defaultof<'T>
-        }
+        Async2.FromResult(fun ct ->
+            __runtimeAsyncReturnValueTask (
+                let result =
+                    try
+                        computation.StartResultTrampolined ct |> ExceptionCache.awaitResultTask ct
+                    with :? OperationCanceledException as error when error.CancellationToken = ct ->
+                        if ct.IsCancellationRequested then Async2Result.Cancelled error
+                        else
+                            compensation error
+                            ExceptionCache.throwException error
+                match result with
+                | Async2Result.Cancelled error when error.CancellationToken = ct ->
+                    compensation error
+                    result
+                | _ -> result))
 
     static member OnCancel(interruption: unit -> unit) : Async2<IDisposable> =
         async2 {
@@ -192,10 +201,15 @@ type Async2 =
         : Async2<Async2<'T>> =
             async2 {
                 let! ct = Async2.CancellationToken
-                let started = computation |> startOnThreadPool ct
-                return async2 {
-                    return! started
-                }
+                let started = computation |> startResultOnThreadPool ct
+                return Async2.FromResult(fun joinToken ->
+                    __runtimeAsyncReturnValueTask (
+                        if joinToken.IsCancellationRequested then Async2Builder.cancelled joinToken
+                        else
+                            match ExceptionCache.awaitTask started with
+                            | Async2Result.Cancelled error when not joinToken.IsCancellationRequested ->
+                                ExceptionCache.throwException error
+                            | result -> result))
             }
 
     static member Parallel
@@ -227,12 +241,12 @@ type Async2 =
                                     results[currentIndex] <- result
                         with
                         | exn when not innerToken.IsCancellationRequested ->
-                            let failure = ExceptionDispatchInfo.Capture exn
+                            let failure = ExceptionCache.captureOrRetrieve exn
                             if Interlocked.CompareExchange(&firstFailure, Some failure, None).IsNone then
                                 cts.Cancel()
                         | _ -> ()
                     }
-                    Task.Run<unit>(fun () -> worker.Start innerToken))
+                    worker |> startResultOnThreadPool innerToken)
 
             try
                 let! completed = Task.WhenAll workers
@@ -273,7 +287,7 @@ type Async2 =
                             | None -> ()
                         with _ -> ()
                 }
-                |> startOnThreadPool cts.Token
+                |> startResultOnThreadPool cts.Token
 
             let workers = computations |> Array.map worker
 
@@ -471,7 +485,7 @@ type Async2 =
             ?cancellationToken: CancellationToken
         ) =
         let cancellationToken = getToken cancellationToken
-        let task = computation.StartInIsolatedTrampoline cancellationToken
+        let task = computation.StartResultInIsolatedTrampoline cancellationToken
 
         let invoke () =
             let result =
@@ -481,8 +495,10 @@ type Async2 =
                     Choice2Of2 error
 
             match result with
-            | Choice1Of2 value ->
+            | Choice1Of2 (Async2Result.Completed value) ->
                 continuation value
+            | Choice1Of2 (Async2Result.Cancelled error) ->
+                cancellationContinuation error
             | Choice2Of2 (:? OperationCanceledException as error) ->
                 cancellationContinuation error
             | Choice2Of2 error ->
@@ -492,7 +508,7 @@ type Async2 =
             invoke ()
         else
             task.ContinueWith(
-                Action<Task<'T>>(fun _ -> invoke ()),
+                Action<Task<Async2Result<'T>>>(fun _ -> invoke ()),
                 CancellationToken.None,
                 TaskContinuationOptions.ExecuteSynchronously,
                 TaskScheduler.Default

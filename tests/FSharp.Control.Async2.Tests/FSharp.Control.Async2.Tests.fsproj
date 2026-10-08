@@ -14,6 +14,7 @@
     <Compile Include="AsyncModule.fs" />
     <Compile Include="AsyncModuleFunctions.fs" />
     <Compile Include="AsyncCompilerRegressionTests.fs" />
+    <Compile Include="CancellationPropagationTests.fs" />
     <Compile Include="MailboxProcessor2Tests.fs" />
   </ItemGroup>
   <ItemGroup>

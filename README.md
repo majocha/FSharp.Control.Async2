@@ -18,6 +18,27 @@ The builder accepts `Async2`, `Task`, `ValueTask`, and awaitable sources;
 `Async2.Sleep` and other cold operations observe the token used to start the
 computation.
 
+Cancellation is propagated between native computations as a struct
+`Async2Result<'T>` rather than by repeatedly throwing. The token remains the
+source of cancellation requests; the result records whether a computation
+actually observed cancellation, so a successful resource acquisition still
+enters its cleanup scope even if its token was canceled during the await.
+Task and synchronous boundaries throw the cancellation exception; continuation
+boundaries invoke the cancellation callback directly. Active `try/finally`
+scopes and synchronous or asynchronous disposal still complete before their
+cancellation propagates. `Parallel` and `Choice` rejoin started workers;
+`and!` retains its left-failure short circuit without waiting for a right
+source that was already started.
+
+Actual faults retain exception-based propagation through an `ExceptionCache`
+that weakly associates each exception with its first captured
+`ExceptionDispatchInfo`, avoiding repeated accumulation of async stack traces.
+Ambient cancellation thrown by an external await becomes a native cancellation
+result; a canceled external task remains catchable when the ambient token is
+live. Cancellation does not interrupt a non-cancellable external await or
+insert checks into ordinary synchronous code. The struct avoids a separate
+result-object allocation, but enlarges native task and state-machine payloads.
+
 ```fsharp
 open System.Threading
 open Microsoft.FSharp.Control
