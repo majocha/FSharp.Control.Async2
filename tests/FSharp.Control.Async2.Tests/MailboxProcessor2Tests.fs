@@ -228,8 +228,10 @@ module MailboxProcessor2Tests =
         Assert.Equal(1, Async2.RunSynchronously(mailbox.Receive()))
         Assert.Equal(4, Async2.RunSynchronously(mailbox.Receive()))
 
-    [<Fact>]
-    let ``Canceling a scan retains skipped messages`` () = task {
+    [<Theory>]
+    [<InlineData(-1)>]
+    [<InlineData(5000)>]
+    let ``Canceling a scan retains skipped messages`` timeout = task {
         use cancellation = new CancellationTokenSource()
         use mailbox =
             new MailboxProcessor2<int>(
@@ -240,7 +242,7 @@ module MailboxProcessor2Tests =
 
         let pending =
             Async2.StartImmediateAsTask(
-                mailbox.TryScan(fun _ -> None : Async2<int> option),
+                mailbox.TryScan((fun _ -> None : Async2<int> option), timeout = timeout),
                 cancellationToken = cancellation.Token
             )
 
@@ -251,6 +253,13 @@ module MailboxProcessor2Tests =
         Assert.Equal(1, Async2.RunSynchronously(mailbox.Receive()))
         Assert.Equal(2, Async2.RunSynchronously(mailbox.Receive()))
         Assert.Equal(3, Async2.RunSynchronously(mailbox.Receive()))
+
+        let next =
+            mailbox.TryScan((fun message -> Some(async2 { return message })), timeout = 1000)
+            |> Async2.StartImmediateAsTask
+        mailbox.Post 42
+        let! result = next.WaitAsync(TimeSpan.FromSeconds 2.0)
+        Assert.Equal(Some 42, result)
     }
 
     [<Fact>]
@@ -449,8 +458,10 @@ module MailboxProcessor2Tests =
             let count = mailbox.Length()
             count, List.init count (fun _ -> mailbox.Receive 0))
 
-    [<Fact>]
-    let ``Waiting scans retain messages without rescanning them`` () = task {
+    [<Theory>]
+    [<InlineData(-1)>]
+    [<InlineData(5000)>]
+    let ``Waiting scans retain messages without rescanning them`` timeout = task {
         use original = new MailboxProcessor<int>(fun _ -> async { return () })
         use replacement = new MailboxProcessor2<int>(fun _ -> async2 { return () })
         let originalVisits = ResizeArray<int>()
@@ -458,14 +469,18 @@ module MailboxProcessor2Tests =
         [ 1; 2 ] |> List.iter original.Post
         [ 1; 2 ] |> List.iter replacement.Post
         let originalPending =
-            original.TryScan(fun message ->
-                originalVisits.Add message
-                if message = 3 then Some(async { return message }) else None)
+            original.TryScan(
+                (fun message ->
+                    originalVisits.Add message
+                    if message = 3 then Some(async { return message }) else None),
+                timeout = timeout)
             |> Async.StartImmediateAsTask
         let replacementPending =
-            replacement.TryScan(fun message ->
-                replacementVisits.Add message
-                if message = 3 then Some(async2 { return message }) else None)
+            replacement.TryScan(
+                (fun message ->
+                    replacementVisits.Add message
+                    if message = 3 then Some(async2 { return message }) else None),
+                timeout = timeout)
             |> Async2.StartImmediateAsTask
 
         Assert.False(originalPending.IsCompleted)
@@ -480,6 +495,84 @@ module MailboxProcessor2Tests =
         Assert.Equal<int list>(List.ofSeq originalVisits, List.ofSeq replacementVisits)
         Assert.Equal<int list>([ 1; 2; 3 ], List.ofSeq replacementVisits)
         Assert.Equal(original.CurrentQueueLength, replacement.CurrentQueueLength)
+    }
+
+    [<Fact>]
+    let ``Finite scans share one timeout across unmatched arrivals`` () = task {
+        use original = new MailboxProcessor<int>(fun _ -> async { return () })
+        use replacement = new MailboxProcessor2<int>(fun _ -> async2 { return () })
+        use stopPosting = new CancellationTokenSource()
+        let originalPending =
+            original.TryScan((fun _ -> None : Async<int> option), timeout = 200)
+            |> Async.StartImmediateAsTask
+        let replacementPending =
+            replacement.TryScan((fun _ -> None : Async2<int> option), timeout = 200)
+            |> Async2.StartImmediateAsTask
+        let posting = task {
+            while not stopPosting.IsCancellationRequested do
+                original.Post 1
+                replacement.Post 1
+                do! Task.Delay 10
+        }
+
+        try
+            let! results =
+                Task.WhenAll(originalPending, replacementPending).WaitAsync(TimeSpan.FromSeconds 2.0)
+            Assert.Equal(None, results.[0])
+            Assert.Equal(results.[0], results.[1])
+        finally
+            stopPosting.Cancel()
+
+        do! posting
+        Assert.True(replacement.CurrentQueueLength > 0)
+        Assert.Equal(original.CurrentQueueLength, replacement.CurrentQueueLength)
+    }
+
+    [<Fact>]
+    let ``Waiting scan deadline does not cancel the selected computation`` () = task {
+        use original = new MailboxProcessor<int>(fun _ -> async { return () })
+        use replacement = new MailboxProcessor2<int>(fun _ -> async2 { return () })
+        let originalSelected = TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+        let replacementSelected = TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+        let release = TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+        let originalPending =
+            original.TryScan(
+                (fun message -> Some(async {
+                    originalSelected.TrySetResult(()) |> ignore
+                    do! Async.AwaitTask release.Task
+                    let! ct = Async.CancellationToken
+                    Assert.False(ct.IsCancellationRequested)
+                    return message
+                })),
+                timeout = 500)
+            |> Async.StartImmediateAsTask
+        let replacementPending =
+            replacement.TryScan(
+                (fun message -> Some(async2 {
+                    replacementSelected.TrySetResult(()) |> ignore
+                    do! release.Task
+                    let! ct = Async2.CancellationToken
+                    Assert.False(ct.IsCancellationRequested)
+                    return message
+                })),
+                timeout = 500)
+            |> Async2.StartImmediateAsTask
+        original.Post 42
+        replacement.Post 42
+
+        try
+            let! _ =
+                Task.WhenAll(originalSelected.Task, replacementSelected.Task).WaitAsync(TimeSpan.FromSeconds 2.0)
+            do! Task.Delay 750
+            Assert.False(originalPending.IsCompleted)
+            Assert.False(replacementPending.IsCompleted)
+        finally
+            release.TrySetResult(()) |> ignore
+
+        let! results =
+            Task.WhenAll(originalPending, replacementPending).WaitAsync(TimeSpan.FromSeconds 2.0)
+        Assert.Equal(Some 42, results.[0])
+        Assert.Equal(results.[0], results.[1])
     }
 
     [<Fact>]

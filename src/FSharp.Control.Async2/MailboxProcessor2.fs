@@ -2,7 +2,6 @@ namespace Microsoft.FSharp.Control
 
 open System
 open System.Collections.Generic
-open System.Diagnostics
 open System.Threading
 open System.Threading.Tasks
 open System.Threading.Tasks.Sources
@@ -141,14 +140,15 @@ type private MailboxProcessor2Queue<'Msg>(cancellationSupported: bool, isThrowEx
                     return! Async2.AwaitWaitHandle(event, millisecondsTimeout = timeout)
             }
 
-    member private this.WaitForScan(timeout: int) : Async2<bool> =
+    member private this.WaitForScan(deadline: CancellationToken) : Async2<bool> =
         async2 {
             let! ct = Async2.CancellationToken
             let waiting = this.AwaitArrival()
             try
                 try
-                    return! waiting.WaitAsync(TimeSpan.FromMilliseconds(float timeout), ct)
-                with :? TimeoutException ->
+                    return! waiting.WaitAsync(deadline)
+                with :? OperationCanceledException ->
+                    ct.ThrowIfCancellationRequested()
                     return false
             finally
                 lock gate (fun () ->
@@ -188,26 +188,25 @@ type private MailboxProcessor2Queue<'Msg>(cancellationSupported: bool, isThrowEx
                 let! value = computation
                 return Some value
             | None ->
-                let startedAt = Stopwatch.GetTimestamp()
-                let rec scan () =
+                let rec scan (wait: unit -> Async2<bool>) =
                     async2 {
                         match this.ScanArrivals scanner with
                         | Some computation ->
                             let! value = computation
                             return Some value
                         | None ->
-                            let! signaled =
-                                if timeout < 0 then
-                                    this.Wait Timeout.Infinite
-                                else
-                                    let elapsed = min (float timeout) (Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds)
-                                    this.WaitForScan(timeout - int elapsed)
-
-                            if signaled then return! scan ()
+                            let! signaled = wait ()
+                            if signaled then return! scan wait
                             else return None
                     }
-
-                return! scan ()
+                if timeout < 0 then
+                    return! scan (fun () -> this.Wait Timeout.Infinite)
+                else
+                    let! ct = Async2.CancellationToken
+                    use deadline = CancellationTokenSource.CreateLinkedTokenSource(ct)
+                    if timeout = 0 then deadline.Cancel()
+                    else deadline.CancelAfter timeout
+                    return! scan (fun () -> this.WaitForScan deadline.Token)
         }
 
     member this.Scan(scanner: 'Msg -> Async2<'T> option, timeout: int) : Async2<'T> =
