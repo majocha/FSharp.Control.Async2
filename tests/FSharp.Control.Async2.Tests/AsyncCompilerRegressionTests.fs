@@ -86,6 +86,34 @@ module AsyncCompilerRegressionTests =
         Assert.Equal(0, Async2.RunSynchronously(loop 10_000))
 
     [<Fact>]
+    let ``Recursive computations unwind handlers and finalizers without overflowing the stack`` () =
+        let mutable finalized = 0
+        let mutable iterations = 0
+
+        let rec loop remaining =
+            async2 {
+                try
+                    iterations <- iterations + 1
+                    try
+                        do! Task.Yield()
+                        if remaining = 1_000 then
+                            failwith "boom"
+                        if remaining = 0 then
+                            return 42
+                        else
+                            return! loop (remaining - 1)
+                    with error when remaining = 20_000 ->
+                        return 99
+                finally
+                    finalized <- finalized + 1
+            }
+
+        let result = Async2.RunSynchronously(loop 50_000)
+
+        Assert.Equal(99, result)
+        Assert.Equal(iterations, finalized)
+
+    [<Fact>]
     let ``A failed start does not leave queued children pending`` () =
         let mutable firstChildTask: Task<int> = null
         let mutable secondChildTask: Task<int> = null
