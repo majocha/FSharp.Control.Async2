@@ -16,7 +16,7 @@ open Microsoft.FSharp.Core
 open Microsoft.FSharp.Core.CompilerServices
 open Microsoft.FSharp.Core.CompilerServices.StateMachineHelpers
 
-module internal Async2RuntimeHelpers =
+module Async2RuntimeHelpers =
     type ValueTaskCompletionSource<'T>() as this =
         let source = ManualResetValueTaskSourceCore<'T>(RunContinuationsAsynchronously = true)
         let mutable completed = 0
