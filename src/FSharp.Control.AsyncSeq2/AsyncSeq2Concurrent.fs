@@ -22,7 +22,7 @@ module AsyncSeq2ConcurrentOperations =
             let ordered = Channel.CreateUnbounded<Task<'U>>()
             let unorderedResults = Channel.CreateUnbounded<'U>()
 
-            let producer = task {
+            let producer = runtimeTask {
                 let jobs = ResizeArray<Task>()
                 try
                     use enumerator = source.GetAsyncEnumerator(token)
@@ -32,7 +32,7 @@ module AsyncSeq2ConcurrentOperations =
                         if next then
                             do! throttle.WaitAsync(token)
                             let current = enumerator.Current
-                            let work = task {
+                            let work = runtimeTask {
                                 try
                                     try
                                         let! result = Async2.StartAsTask(mapping current, cancellationToken = token)
@@ -162,7 +162,7 @@ module AsyncSeq2ConcurrentOperations =
                 let token = linked.Token
                 let channel = Channel.CreateUnbounded<Choice<'T, 'U>>()
 
-                let produce (source: AsyncSeq2<'V>) wrap = task {
+                let produce (source: AsyncSeq2<'V>) wrap = runtimeTask {
                     try
                         use enumerator = source.GetAsyncEnumerator(token)
                         let mutable running = true

@@ -158,3 +158,10 @@ module RuntimeTask =
             __runtimeAsyncReturnValueTask(code())
 
     let runtimeValueTask = ValueTaskBuilder()
+
+    type ValueTaskUnitBuilder () =
+        inherit RuntimeAsyncBuilder()
+        member inline _.Run([<InlineIfLambda>] code) : ValueTask =
+            __runtimeAsyncReturnValueTaskUnit(code())
+
+    let runtimeValueTaskUnit = ValueTaskUnitBuilder()

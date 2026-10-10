@@ -353,7 +353,7 @@ module AsyncSeq2AdditionalOperations =
             let mutable finished = false
             let mutable failure: exn option = None
 
-            let item index = Async2.StartTaskImmediate(fun (ct: CancellationToken) -> task {
+            let item index = Async2.StartTaskImmediate(fun (ct: CancellationToken) -> runtimeTask {
                 do! gate.WaitAsync(ct)
                 try
                     match failure with
