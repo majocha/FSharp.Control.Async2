@@ -173,11 +173,11 @@ module DelayHelper =
 type DummyTaskFactory(µsecMin: int64<µs>, µsecMax: int64<µs>) =
     let mutable x = 0
 
-    let runTaskDelayed () = backgroundTask { return! DelayHelper.delayTask µsecMin µsecMax (fun _ -> Interlocked.Increment &x) }
+    let runTaskDelayed () = backgroundRuntimeTask { return! DelayHelper.delayTask µsecMin µsecMax (fun _ -> Interlocked.Increment &x) }
 
-    let runTaskDelayedImmutable i = backgroundTask { return! DelayHelper.delayTask µsecMin µsecMax (fun _ -> i + 1) }
+    let runTaskDelayedImmutable i = backgroundRuntimeTask { return! DelayHelper.delayTask µsecMin µsecMax (fun _ -> i + 1) }
 
-    let runTaskDirect () = backgroundTask {
+    let runTaskDirect () = backgroundRuntimeTask {
         Interlocked.Increment &x |> ignore
         return x
     }
@@ -419,7 +419,7 @@ module TestUtils =
             match variant with
             | EmptyVariant.CallEmpty -> (AsyncSeq2.empty ())
             | EmptyVariant.Do -> asyncSeq2 { do ignore () }
-            | EmptyVariant.DoBang -> asyncSeq2 { do! task { return () } }
+            | EmptyVariant.DoBang -> asyncSeq2 { do! runtimeTask { return () } }
             | EmptyVariant.YieldBang -> asyncSeq2 { yield! Seq.empty<int> }
             | EmptyVariant.YieldBangNested -> asyncSeq2 { yield! asyncSeq2 { do ignore () } }
             | EmptyVariant.DelayDoBang -> asyncSeq2 {
@@ -634,7 +634,7 @@ module TestUtils =
                     { new IAsyncEnumerator<'T> with
                         member _.MoveNextAsync() = ValueTask.False
                         member _.Current = Unchecked.defaultof<'T>
-                        member _.DisposeAsync() = ValueTask(task { do disposed.Value <- disposed.Value + 1 })
+                        member _.DisposeAsync() = runtimeValueTaskUnit { do disposed.Value <- disposed.Value + 1 }
                     }
             }
 
@@ -661,7 +661,7 @@ module TestUtils =
                             | WithCurrent -> 42
                             | _ -> Unchecked.defaultof<int>
 
-                        member _.DisposeAsync() = ValueTask(task { do disposed.Value <- disposed.Value + 1 })
+                        member _.DisposeAsync() = runtimeValueTaskUnit { do disposed.Value <- disposed.Value + 1 }
                     }
             }
     //
