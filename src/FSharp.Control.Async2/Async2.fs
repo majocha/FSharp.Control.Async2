@@ -17,50 +17,40 @@ open Microsoft.FSharp.Core.CompilerServices
 open Microsoft.FSharp.Core.CompilerServices.StateMachineHelpers
 
 module internal Async2RuntimeHelpers =
-    type ValueTaskCompletionSource<'T>() as this =
+    type ValueTaskCompletionSource<'T>(cancellationToken: CancellationToken) =
+        let mutable completed = false
         let source = ManualResetValueTaskSourceCore<'T>(RunContinuationsAsynchronously = true)
-        let mutable completed = 0
-        let mutable canceled = 0
-        let mutable cancellationRegistration = Unchecked.defaultof<CancellationTokenRegistration>
+        let cancellationRegistration =
+            cancellationToken.Register(
+                fun () ->
+                    if not (Interlocked.CompareExchange(&completed, true, false)) then
+                        source.SetException(TaskCanceledException("The task was canceled.", null, cancellationToken))
+            )
 
         interface IValueTaskSource<'T> with
             member _.GetResult token = source.GetResult token
-            member _.GetStatus token =
-                let status = source.GetStatus token
-                if status = ValueTaskSourceStatus.Faulted && Volatile.Read(&canceled) <> 0 then
-                    ValueTaskSourceStatus.Canceled
-                else
-                    status
+            member _.GetStatus token = source.GetStatus token
             member _.OnCompleted(continuation, state, token, flags) = source.OnCompleted(continuation, state, token, flags)
 
-        member _.TrySetResult(value: 'T) =
-            if Interlocked.CompareExchange(&completed, 1, 0) = 0 then
+        member _.TrySetResult(value: 'T) = 
+            if not (Interlocked.CompareExchange(&completed, true, false)) then
                 source.SetResult value
+        member _.TrySetException(exn) = 
+            if not (Interlocked.CompareExchange(&completed, true, false)) then
+                source.SetException exn
 
-        member _.TrySetException(ex: exn) =
-            if Interlocked.CompareExchange(&completed, 1, 0) = 0 then
-                if ex :? OperationCanceledException then
-                    Volatile.Write(&canceled, 1)
-                source.SetException ex
-
-        member _.Await(ct: CancellationToken) =
-            cancellationRegistration <-
-                ct.Register(
-                    Action(fun () ->
-                        this.TrySetException(TaskCanceledException("The task was canceled.", null, ct)))
-                )
-            ValueTask<'T>(this, source.Version)
+        member this.ValueTask = ValueTask<'T>(this, source.Version)
 
         member _.Dispose() = cancellationRegistration.Dispose()
 
-    let defaultCancellationTokenSource = ref (new CancellationTokenSource())
+    let mutable defaultCancellationTokenSource = new CancellationTokenSource()
 
     let getDefaultCancellationToken () =
-        (!defaultCancellationTokenSource).Token
+        defaultCancellationTokenSource.Token
 
     let replaceDefaultCancellationToken () =
-        let oldSource = !defaultCancellationTokenSource
-        defaultCancellationTokenSource := new CancellationTokenSource()
+        let oldSource = defaultCancellationTokenSource
+        defaultCancellationTokenSource <- new CancellationTokenSource()
         oldSource.Cancel()
         oldSource.Dispose()
 
@@ -410,7 +400,7 @@ type Async2 =
         async2 {
             let! ct = Async2.CancellationToken
 
-            let tcs = ValueTaskCompletionSource<bool>()
+            let tcs = ValueTaskCompletionSource<bool>(ct)
 
             let callback =
                 WaitOrTimerCallback(fun _ timedOut -> tcs.TrySetResult(not timedOut))
@@ -418,7 +408,7 @@ type Async2 =
             let handle =
                 ThreadPool.RegisterWaitForSingleObject(waitHandle, callback, null, defaultArg millisecondsTimeout Timeout.Infinite, true)
             try
-                return! tcs.Await ct
+                return! tcs.ValueTask
             finally
                 handle.Unregister null |> ignore
                 tcs.Dispose()
