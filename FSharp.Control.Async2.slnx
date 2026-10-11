@@ -1,4 +1,7 @@
 <Solution>
+  <Folder Name="/benchmarks/">
+    <Project Path="benchmarks/FSharp.Control.Async2.Benchmarks/FSharp.Control.Async2.Benchmarks.fsproj" />
+  </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/FSharp.Control.Async2.Tests/FSharp.Control.Async2.Tests.fsproj" />
     <Project Path="tests/FSharp.Control.AsyncSeq2.TaskSeq.Tests/FSharp.Control.AsyncSeq2.TaskSeq.Tests.fsproj" />
