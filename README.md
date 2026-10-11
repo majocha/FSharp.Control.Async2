@@ -56,6 +56,28 @@ dotnet test
 
 The focused `AsyncType`, `AsyncModule`, and `AsyncModuleFunctions` suites are accompanied by direct xUnit ports of older compiler-library regressions. RuntimeAsync compiler-component tests are intentionally outside this project.
 
+## Benchmarks
+
+The `benchmarks/FSharp.Control.Async2.Benchmarks` project uses BenchmarkDotNet to measure runtime and allocations for recursive computations, cancellation, exception propagation, and per-level `try/with` and `try/finally` handling. Results are reported for recursion depths of 16, 256, and 2048. The recursive workloads await `Task.Yield()` every 16 levels, including the deepest level, to mix synchronous work with asynchronous suspension. Expected exceptions and cancellation are handled explicitly; unexpected failures are not swallowed.
+
+Build and run the benchmarks in Release mode with:
+
+```sh
+dotnet run --project benchmarks/FSharp.Control.Async2.Benchmarks/FSharp.Control.Async2.Benchmarks.fsproj -c Release
+```
+
+Pass BenchmarkDotNet arguments after `--`, for example `-- --filter *DeepException*`.
+
+Run a single cold-start measurement of every case (all eight methods at all
+three depths) as a quick failure/stack-overflow check:
+
+```sh
+dotnet run --project benchmarks/FSharp.Control.Async2.Benchmarks/FSharp.Control.Async2.Benchmarks.fsproj -c Release -- --filter "*" --job Dry
+```
+
+The benchmark runner exits with a nonzero code if validation or a benchmark
+fails. Dry-job timings are smoke checks, not statistically reliable measurements.
+
 ## MailboxProcessor2
 
 `MailboxProcessor2<'Msg>` is an `async2`-native mailbox agent with `Post`,
