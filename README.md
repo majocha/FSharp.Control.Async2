@@ -60,6 +60,16 @@ The focused `AsyncType`, `AsyncModule`, and `AsyncModuleFunctions` suites are ac
 
 The `benchmarks/FSharp.Control.Async2.Benchmarks` project uses BenchmarkDotNet to measure runtime and allocations for recursive computations, cancellation, exception propagation, and per-level `try/with` and `try/finally` handling. Results are reported for recursion depths of 16, 256, and 2048. The recursive workloads await `Task.Yield()` every 16 levels, including the deepest level, to mix synchronous work with asynchronous suspension. Expected exceptions and cancellation are handled explicitly; unexpected failures are not swallowed.
 
+Each workload has a built-in `async` counterpart with an `Async` method suffix.
+Results are grouped by workload and depth, with `async2` as each pair's baseline.
+Both implementations start immediately and synchronously wait for completion:
+`Async2.RunSynchronouslyImmediate` versus `Async.StartImmediateAsTask` followed
+by `GetAwaiter().GetResult()`. Built-in `async` awaits `Task.Yield()` through
+`Async.FromContinuations`, without an intermediate task per yield.
+Built-in `Async.StartImmediateAsTask` does not preserve the cancellation token
+in its canceled task, so its cancellation cases check that their token source
+was canceled rather than requiring exception-token identity.
+
 Build and run the benchmarks in Release mode with:
 
 ```sh
@@ -68,8 +78,9 @@ dotnet run --project benchmarks/FSharp.Control.Async2.Benchmarks/FSharp.Control.
 
 Pass BenchmarkDotNet arguments after `--`, for example `-- --filter *DeepException*`.
 
-Run a single cold-start measurement of every case (all eight methods at all
-three depths) as a quick failure/stack-overflow check:
+Run a single cold-start measurement of every case (eight workloads for both
+implementations at three depths, totaling 48 cases) as a quick
+failure/stack-overflow check:
 
 ```sh
 dotnet run --project benchmarks/FSharp.Control.Async2.Benchmarks/FSharp.Control.Async2.Benchmarks.fsproj -c Release -- --filter "*" --job Dry
