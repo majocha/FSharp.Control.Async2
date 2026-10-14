@@ -5,10 +5,19 @@ A separate asynchronous computation-expression library, named `Async2` and
 FSharp.Core's `Async` and `async`.
 
 The implementation uses the preview runtime-async compiler feature.
-`Async2<'T>` is a cold carrier: its runtime-async `Task<'T>` factory receives
-the `CancellationToken` supplied when the computation is started. Both library
-projects target `net11.0`; the test projects use xUnit v3 with the Microsoft
-Testing Platform runner.
+`Async2<'T>` is a cold carrier: its runtime-async `ValueTask<'T>` factory receives
+the `CancellationToken` supplied when the computation is started. Nested starts
+run inline while stack space is available, then use a stack-safe, ValueTask-based
+trampoline without TaskCompletionSource or Task conversions. Task conversion is
+kept at Task-interoperability, blocking, and public continuation boundaries;
+completed immediate runs need no Task.
+`return!` of another `Async2` in tail position (compiled to `ReturnFromFinal`) is
+handed to a loop owned by the outermost computation, so tail-recursive workflows
+run in constant stack and memory. The finished frame no longer awaits its tail
+callee, so `AsyncLocal` changes made by the caller are not visible to it and the
+caller frames are absent from stack traces.
+Both library projects target `net11.0`; the test projects use xUnit v3 with the
+Microsoft Testing Platform runner.
 
 ## Async2
 

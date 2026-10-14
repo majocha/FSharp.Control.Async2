@@ -61,7 +61,7 @@ module internal Async2RuntimeHelpers =
         Task.Run<'T>(fun () -> computation.Start cancellationToken)
 
     let startImmediate cancellationToken (computation: Async2<_>) =
-        computation.StartInIsolatedTrampoline cancellationToken
+        (computation.StartInIsolatedTrampoline cancellationToken).AsTask()
 
     let cancellationTokenAsync = Async2(fun ct -> ValueTask<CancellationToken>(ct))
 
@@ -92,7 +92,7 @@ type Async2 =
                 && Thread.CurrentThread.IsThreadPoolThread
                 && Async2Builder.isAlreadyBackground ()
             then
-                computation.StartInIsolatedTrampoline ct
+                (computation.StartInIsolatedTrampoline ct).AsTask()
             else
                 computation |> startOnThreadPool ct
 
@@ -122,9 +122,11 @@ type Async2 =
     static member RunSynchronouslyImmediate
         (computation: Async2<'T>, ?cancellationToken: CancellationToken)
         =
-        computation.StartInIsolatedTrampoline(getToken cancellationToken)
-            .GetAwaiter()
-            .GetResult()
+        let pending = computation.StartInIsolatedTrampoline(getToken cancellationToken)
+        if pending.IsCompleted then
+            pending.GetAwaiter().GetResult()
+        else
+            pending.AsTask().GetAwaiter().GetResult()
 
     static member Start(computation: Async2<unit>, ?cancellationToken: CancellationToken) =
         let ct = getToken cancellationToken
@@ -461,7 +463,7 @@ type Async2 =
             ?cancellationToken: CancellationToken
         ) =
         let cancellationToken = getToken cancellationToken
-        let task = computation.StartInIsolatedTrampoline cancellationToken
+        let task = (computation.StartInIsolatedTrampoline cancellationToken).AsTask()
 
         let invoke () =
             let result =

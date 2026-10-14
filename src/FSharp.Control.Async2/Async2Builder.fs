@@ -4,6 +4,7 @@ open System
 open System.Runtime.CompilerServices
 open System.Threading
 open System.Threading.Tasks
+open System.Threading.Tasks.Sources
 open System.Collections.Generic
 open Microsoft.FSharp.Core.CompilerServices
 
@@ -73,20 +74,49 @@ module Async2BuilderSources =
 
 open Async2BuilderSources
 
+/// Carries the next computation of a tail-call chain from a finished frame back to the loop that owns the chain.
+[<AllowNullLiteral; Sealed; System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)>]
+type TailBox<'T>() =
+    let mutable next = Unchecked.defaultof<CancellationToken -> TailBox<'T> -> ValueTask<'T>>
+    member _.HasNext = not (isNull (box next))
+
+    member _.Set(start: CancellationToken -> TailBox<'T> -> ValueTask<'T>) = next <- start
+
+    member _.Take() =
+        let value = next
+        next <- Unchecked.defaultof<_>
+        value
+
 module internal Async2StartTrampoline =
+    [<AllowNullLiteral>]
     type private State() =
         let queue = Queue<unit -> unit>()
         member _.Queue = queue
         member val IsRunning = false with get, set
+        member val Depth = 0 with get, set
 
-    let private state = new ThreadLocal<State>(fun () -> State())
+    [<AbstractClass; Sealed>]
+    type private StateHolder =
+        [<ThreadStatic; DefaultValue>]
+        static val mutable private state: State
+
+        static member Get() =
+            if isNull StateHolder.state then
+                StateHolder.state <- State()
+            StateHolder.state
+
+        static member Set(value) =
+            StateHolder.state <- value
+
+    let private inlineDepthLimit = 128
+    let private stackCheckInterval = 16
 
     let private drain (current: State) =
         while current.Queue.Count > 0 do
             current.Queue.Dequeue()()
 
     let private enqueueCompletion action =
-        let current = state.Value
+        let current = StateHolder.Get()
 
         if current.IsRunning then
             current.Queue.Enqueue(action)
@@ -99,87 +129,164 @@ module internal Async2StartTrampoline =
             finally
                 current.IsRunning <- false
 
-    let private complete<'T> (task: Task<'T>) (completion: TaskCompletionSource<'T>) =
-        if task.IsCanceled then
-            let cancellationToken =
-                try
-                    task.GetAwaiter().GetResult() |> ignore
-                    CancellationToken.None
-                with
-                | :? OperationCanceledException as error -> error.CancellationToken
+    type private QueuedStart<'T>(start: CancellationToken -> TailBox<'T> -> ValueTask<'T>, cancellationToken: CancellationToken) =
+        static let runInContext = ContextCallback(fun state -> (state :?> QueuedStart<'T>).Start())
+        let mutable source = ManualResetValueTaskSourceCore<'T>()
+        let mutable awaiter = Unchecked.defaultof<ConfiguredValueTaskAwaitable<'T>.ConfiguredValueTaskAwaiter>
 
-            completion.TrySetCanceled(cancellationToken) |> ignore
-        elif task.IsFaulted then
-            completion.TrySetException(task.Exception.InnerExceptions) |> ignore
-        else
-            completion.TrySetResult(task.Result) |> ignore
+        member private _.Complete() =
+            let mutable result = Unchecked.defaultof<'T>
+            let mutable error = null
 
-    let private startQueued<'T> (start: unit -> Task<'T>) (completion: TaskCompletionSource<'T>) =
-        try
-            let task = start ()
+            try
+                result <- awaiter.GetResult()
+            with caught ->
+                error <- caught
 
-            if task.IsCompleted then
-                enqueueCompletion (fun () -> complete task completion)
+            if isNull error then
+                source.SetResult(result)
             else
-                task.ContinueWith(
-                    Action<Task<'T>>(fun _ ->
-                        enqueueCompletion (fun () -> complete task completion)),
-                    CancellationToken.None,
-                    TaskContinuationOptions.ExecuteSynchronously,
-                    TaskScheduler.Default
-                )
-                |> ignore
-        with error ->
-            enqueueCompletion (fun () -> completion.TrySetException(error) |> ignore)
+                source.SetException(error)
 
-    let start<'T> (start: unit -> Task<'T>) =
-        let current = state.Value
+        member private this.Start() =
+            let mutable error = null
+            let mutable completed = false
+
+            try
+                // Do not capture a scheduling context for this internal completion bridge.
+                let current = StateHolder.Get()
+                current.Depth <- current.Depth + 1
+                let pending =
+                    try
+                        start cancellationToken null
+                    finally
+                        current.Depth <- current.Depth - 1
+                awaiter <- pending.ConfigureAwait(false).GetAwaiter()
+                completed <- awaiter.IsCompleted
+            with caught ->
+                error <- caught
+
+            if not (isNull error) then
+                source.SetException(error)
+            elif completed then
+                this.Complete()
+            else
+                try
+                    awaiter.UnsafeOnCompleted(Action(fun () ->
+                        enqueueCompletion (fun () -> this.Complete())))
+                with error ->
+                    source.SetException(error)
+
+        member this.Run(context: ExecutionContext) =
+            if isNull context then
+                this.Start()
+            else
+                ExecutionContext.Run(context, runInContext, this)
+
+        member this.ValueTask = ValueTask<'T>(this, source.Version)
+
+        interface IValueTaskSource<'T> with
+            member _.GetResult token = source.GetResult token
+            member _.GetStatus token = source.GetStatus token
+            member _.OnCompleted(continuation, state, token, flags) =
+                source.OnCompleted(continuation, state, token, flags)
+
+    let start<'T> (start: CancellationToken -> TailBox<'T> -> ValueTask<'T>) (cancellationToken: CancellationToken) =
+        let current = StateHolder.Get()
 
         if current.IsRunning then
-            let completion = TaskCompletionSource<'T>()
-            // The queue is drained after the parent has returned or suspended, so the child must
-            // run in the execution context the parent had when it asked for the start.
-            let context = ExecutionContext.Capture()
-
-            current.Queue.Enqueue(fun () ->
-                if isNull context then
-                    startQueued start completion
-                else
-                    ExecutionContext.Run(context, (fun _ -> startQueued start completion), null))
-
-            completion.Task
+            // Runtime-async continuation frames can outgrow the trampoline's nested-start depth.
+            if
+                current.Depth < inlineDepthLimit
+                && (current.Depth % stackCheckInterval <> 0 || RuntimeHelpers.TryEnsureSufficientExecutionStack())
+            then
+                current.Depth <- current.Depth + 1
+                try
+                    try
+                        start cancellationToken null
+                    with error ->
+                        ValueTask.FromException<'T>(error)
+                finally
+                    current.Depth <- current.Depth - 1
+            else
+                let completion = QueuedStart<'T>(start, cancellationToken)
+                // The queue is drained after the parent has returned or suspended, so the child must
+                // run in the execution context the parent had when it asked for the start.
+                let context = ExecutionContext.Capture()
+                current.Queue.Enqueue(fun () -> completion.Run(context))
+                completion.ValueTask
         else
             current.IsRunning <- true
 
             try
-                start ()
+                start cancellationToken null
             finally
                 try
                     drain current
                 finally
                     current.IsRunning <- false
 
-    let startIsolated<'T> (startComputation: unit -> Task<'T>) =
-        let previous = state.Value
-        state.Value <- State()
+    let startIsolated<'T> (startComputation: CancellationToken -> TailBox<'T> -> ValueTask<'T>, cancellationToken: CancellationToken) =
+        let previous = StateHolder.Get()
+        StateHolder.Set(State())
 
         try
-            startComputation ()
+            startComputation cancellationToken null
         finally
-            state.Value <- previous
+            StateHolder.Set(previous)
 
-[<Sealed; NoEquality; NoComparison; CompiledName("FSharpAsync2`1")>]
-type Async2<'T> (start: CancellationToken -> ValueTask<'T>) =
-    member _.Start ct = start ct |> _.AsTask()
+/// The state threaded through builder code: the cancellation token and, when the computation was
+/// started by a tail-call loop, the box a final `return!` hands its callee to. `'R` is the result type
+/// of the whole computation expression, so a final `return!` is known to produce exactly that type.
+[<Struct; NoEquality; NoComparison; System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)>]
+type Async2Context<'R> =
+    val CancellationToken: CancellationToken
+    val Tail: TailBox<'R>
+    new(cancellationToken, tail) = { CancellationToken = cancellationToken; Tail = tail }
+
+[<Struct; NoEquality; NoComparison; CompiledName("FSharpAsync2`1")>]
+type Async2<'T> private (start: CancellationToken -> TailBox<'T> -> ValueTask<'T>) =
+    new (start: CancellationToken -> ValueTask<'T>) = Async2<'T>(fun ct _ -> start ct)
+
+    member _.Start ct = start ct null |> _.AsTask()
+
+    /// Builder-produced computations receive the tail box; custom ones ignore it.
+    [<System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)>]
+    static member FromTailStart(start: CancellationToken -> TailBox<'T> -> ValueTask<'T>) = Async2<'T>(start)
+
+    // Starts directly: the tail box must reach the callee's own frame, so this bypasses the trampoline queue.
+    [<System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)>]
+    member _.StartTail(tail: TailBox<'T>, ct: CancellationToken) = start ct tail
 
     [<System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)>]
+    member _.HandOff(tail: TailBox<'T>) = tail.Set start
+
+    [<System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)>]
+    // Keep trampoline internals out of runtime-async inline expansions.
+    [<MethodImpl(MethodImplOptions.NoInlining)>]
     member _.StartTrampolined ct =
-        Async2StartTrampoline.start (fun () -> start ct |> _.AsTask())
+        Async2StartTrampoline.start start ct
 
     member internal _.StartInIsolatedTrampoline ct =
-        Async2StartTrampoline.startIsolated (fun () -> start ct |> _.AsTask())
+        Async2StartTrampoline.startIsolated (start, ct)
 
-type Async2Code<'T> = CancellationToken -> 'T
+[<AbstractClass; Sealed; System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)>]
+type Async2TailCall =
+    /// Runs `first` and every computation it hands over through a final `return!`, in constant stack.
+    static member Loop<'T>(first: Async2<'T>, ct: CancellationToken) : ValueTask<'T> =
+        __runtimeAsyncReturnValueTask (
+            let tail = TailBox<'T>()
+            let mutable result = first.StartTail(tail, ct) |> AsyncHelpers.Await
+
+            while tail.HasNext do
+                let next = tail.Take()
+                result <- next ct tail |> AsyncHelpers.Await
+
+            result
+        )
+
+/// Builder code: `'R` is the result type of the whole computation, `'T` the type of this piece.
+type Async2Code<'R, 'T> = Async2Context<'R> -> 'T
 
 module Async2Builder =
     let inline isAlreadyBackground () =
@@ -189,87 +296,122 @@ module Async2Builder =
     let inline check (cancellationToken: CancellationToken) =
         cancellationToken.ThrowIfCancellationRequested()
 
+    let inline coldOf (computation: Async2<'T>) =
+        Cold(fun ct -> computation.StartTrampolined ct |> AsyncHelpers.Await)
+
+    /// The same token without a tail box: used where a final `return!` must not escape (try regions, non-tail code).
+    let inline noTail (ctx: Async2Context<'R>) = Async2Context<'R>(ctx.CancellationToken, null)
+
 open Async2Builder
 
 type Async2Builder() =
 
-    // The code type of the builder is `CancellationToken -> 'T`, i.e. the cancellation token is
-    // passed along as state to every delayed continuation.
-    member inline _.Delay([<InlineIfLambda>] generator) : Async2Code<'T> =
-        fun ct ->
-            check ct
-            generator () ct
+    // The code type of the builder is `Async2Context -> 'T`, i.e. the cancellation token and the tail box
+    // are passed along as state to every delayed continuation.
+    member inline _.Delay([<InlineIfLambda>] generator: unit -> Async2Code<'R, 'T>) : Async2Code<'R, 'T> =
+        fun ctx ->
+            check ctx.CancellationToken
+            let code = generator ()
+            code ctx
 
-    member inline _.Zero() : Async2Code<unit> =
-        fun ct ->
-            check ct
+    member inline _.Zero() : Async2Code<'R, unit> =
+        fun ctx ->
+            check ctx.CancellationToken
             ()
 
-    member inline _.Return(value: 'T) : Async2Code<'T> =
-        fun ct ->
-            check ct
+    member inline _.Return(value: 'T) : Async2Code<'R, 'T> =
+        fun ctx ->
+            check ctx.CancellationToken
             value
 
-    member inline _.Combine([<InlineIfLambda>] first, [<InlineIfLambda>] second) : Async2Code<'T> =
-        fun ct ->
-            check ct
-            first ct |> ignore
-            second ct
+    member inline _.Combine([<InlineIfLambda>] first, [<InlineIfLambda>] second) : Async2Code<'R, 'T> =
+        fun ctx ->
+            check ctx.CancellationToken
+            first (noTail ctx) |> ignore
+            second ctx
 
-    member inline _.TryWith ([<InlineIfLambda>] body, [<InlineIfLambda>] handler) : Async2Code<'T> =
-        fun ct ->
-            check ct
+    member inline _.TryWith ([<InlineIfLambda>] body, [<InlineIfLambda>] handler) : Async2Code<'R, 'T> =
+        fun ctx ->
+            check ctx.CancellationToken
+            let inner = noTail ctx
             try
-                body ct
+                body inner
             with error ->
-                check ct
-                handler error ct
+                check ctx.CancellationToken
+                handler error ctx
 
-    member inline _.TryFinally ([<InlineIfLambda>] body, [<InlineIfLambda>] compensation) : Async2Code<'T> =
-        fun ct ->
+    member inline _.TryFinally ([<InlineIfLambda>] body, [<InlineIfLambda>] compensation) : Async2Code<'R, 'T> =
+        fun ctx ->
+            let inner = noTail ctx
             try
-                check ct
-                body ct
+                check ctx.CancellationToken
+                body inner
             finally
                 compensation ()
 
-    member inline _.Using(resource: 'T :> IDisposable | null, [<InlineIfLambda>] body) : Async2Code<'U> =
-        fun ct ->
+    member inline _.Using(resource: 'T :> IDisposable | null, [<InlineIfLambda>] body) : Async2Code<'R, 'U> =
+        fun ctx ->
+            let inner = noTail ctx
             try
-                check ct
-                body resource ct
+                check ctx.CancellationToken
+                body resource inner
             finally
                 if not (isNull (box resource)) then resource.Dispose()
 
-    member inline _.While(guard: unit -> bool, [<InlineIfLambda>] body) : Async2Code<unit> =
-        fun ct ->
+    member inline _.While(guard: unit -> bool, [<InlineIfLambda>] body) : Async2Code<'R, unit> =
+        fun ctx ->
+            let ctx = noTail ctx
             while guard () do
-                check ct
-                body ct
-            check ct
+                check ctx.CancellationToken
+                body ctx
+            check ctx.CancellationToken
 
-    member inline _.For(sequence: seq<'T>, [<InlineIfLambda>] body) : Async2Code<unit> =
-        fun ct ->
+    member inline _.For(sequence: seq<'T>, [<InlineIfLambda>] body) : Async2Code<'R, unit> =
+        fun ctx ->
+            let ctx = noTail ctx
             for item in sequence do
-                check ct
-                body item ct
-            check ct
+                check ctx.CancellationToken
+                body item ctx
+            check ctx.CancellationToken
 
-    member inline _.Bind([<InlineIfLambda>] awaited: Started<'T>,[<InlineIfLambda>] continuation) : Async2Code<'U> =
-        fun ct ->
-            check ct
-            continuation (awaited.Invoke()) ct
+    member inline _.Bind([<InlineIfLambda>] awaited: Started<'T>,[<InlineIfLambda>] continuation) : Async2Code<'R, 'U> =
+        fun ctx ->
+            check ctx.CancellationToken
+            continuation (awaited.Invoke()) ctx
 
-    member inline this.Bind([<InlineIfLambda>] cancellable: Cold<'T>,[<InlineIfLambda>] continuation) : Async2Code<'U> =
-        fun ct ->
-            check ct
-            continuation (cancellable.Invoke ct) ct
+    member inline this.Bind([<InlineIfLambda>] cancellable: Cold<'T>,[<InlineIfLambda>] continuation) : Async2Code<'R, 'U> =
+        fun ctx ->
+            check ctx.CancellationToken
+            continuation (cancellable.Invoke ctx.CancellationToken) ctx
 
-    member inline _.ReturnFrom([<InlineIfLambda>] awaited: Started<'T>) : Async2Code<'T> =
+    member inline _.ReturnFrom([<InlineIfLambda>] awaited: Started<'T>) : Async2Code<'R, 'T> =
         fun _ -> awaited.Invoke()
 
-    member inline _.ReturnFrom([<InlineIfLambda>] cancellable: Cold<'T>) : Async2Code<'T> =
-        fun ct -> cancellable.Invoke ct
+    member inline _.ReturnFromFinal([<InlineIfLambda>] awaited: Started<'T>) : Async2Code<'R, 'T> =
+        fun _ -> awaited.Invoke()
+
+    member inline _.ReturnFrom([<InlineIfLambda>] cancellable: Cold<'T>) : Async2Code<'R, 'T> =
+        fun ctx -> cancellable.Invoke ctx.CancellationToken
+
+    member inline _.ReturnFromFinal([<InlineIfLambda>] cancellable: Cold<'T>) : Async2Code<'R, 'T> =
+        fun ctx -> cancellable.Invoke ctx.CancellationToken
+
+    member inline this.Bind(computation: Async2<'T>, [<InlineIfLambda>] continuation) : Async2Code<'R, 'U> =
+        this.Bind(coldOf computation, continuation)
+
+    member inline this.ReturnFrom(computation: Async2<'T>) : Async2Code<'R, 'T> =
+        this.ReturnFrom(coldOf computation)
+
+    // Nothing follows a final `return!`, so the frame can finish before the callee starts:
+    // the callee is handed to the loop that owns the chain instead of being awaited. Without an owner
+    // (this frame was not started by a loop) this frame becomes the loop.
+    member inline _.ReturnFromFinal(computation: Async2<'R>) : Async2Code<'R, 'R> =
+        fun ctx ->
+            if isNull ctx.Tail then
+                Async2TailCall.Loop(computation, ctx.CancellationToken) |> AsyncHelpers.Await
+            else
+                computation.HandOff ctx.Tail
+                Unchecked.defaultof<'R>
 
     member inline _.MergeSources([<InlineIfLambda>] left: Started<'A>, [<InlineIfLambda>] right: Started<'B>) =
         let left = left.Invoke()
@@ -300,35 +442,51 @@ type Async2Builder() =
             struct (left, right)
         )
 
-    member inline this.Source(computation: Async2<'T>) =
-        Cold(fun ct -> computation.StartTrampolined ct |> AsyncHelpers.Await)
+    member inline this.MergeSources(left: Async2<'A>, right: Async2<'B>) =
+        this.MergeSources(coldOf left, coldOf right)
 
-    member inline _.Run([<InlineIfLambda>] code: Async2Code<'T>) : Async2<'T> =
-        Async2(fun ct -> __runtimeAsyncReturnValueTask (code ct))
+    member inline this.MergeSources(left: Async2<'A>, [<InlineIfLambda>] right: Started<'B>) =
+        this.MergeSources(coldOf left, right)
+
+    member inline this.MergeSources(left: Async2<'A>, [<InlineIfLambda>] right: Cold<'B>) =
+        this.MergeSources(coldOf left, right)
+
+    member inline this.MergeSources([<InlineIfLambda>] left: Started<'A>, right: Async2<'B>) =
+        this.MergeSources(left, coldOf right)
+
+    member inline this.MergeSources([<InlineIfLambda>] left: Cold<'A>, right: Async2<'B>) =
+        this.MergeSources(left, coldOf right)
+
+    member inline _.Source(computation: Async2<'T>) = computation
+
+    member inline _.Run([<InlineIfLambda>] code: Async2Code<'T, 'T>) : Async2<'T> =
+        Async2<'T>.FromTailStart(fun ct tail ->
+            __runtimeAsyncReturnValueTask (code (Async2Context<'T>(ct, tail))))
 
 [<AutoOpen>]
 module Async2BuilderAsyncDisposableExtensions =
     type Async2Builder with
-        member inline _.Using(resource: 'T :> IAsyncDisposable | null, [<InlineIfLambda>] body) : Async2Code<'U> =
-            fun ct ->
+        member inline _.Using(resource: 'T :> IAsyncDisposable | null, [<InlineIfLambda>] body) : Async2Code<'R, 'U> =
+            fun ctx ->
+                let inner = noTail ctx
                 try
-                    check ct
-                    body resource ct
+                    check ctx.CancellationToken
+                    body resource inner
                 finally
                     if not (isNull (box resource)) then
                         resource.DisposeAsync() |> AsyncHelpers.Await
 
-        member inline this.For(sequence: IAsyncEnumerable<'T>, [<InlineIfLambda>] body) : Async2Code<unit> =
-            fun ct ->
+        member inline this.For(sequence: IAsyncEnumerable<'T>, [<InlineIfLambda>] body) : Async2Code<'R, unit> =
+            fun ctx ->
                 this.Using
-                    (sequence.GetAsyncEnumerator ct,
-                     fun enumerator ct ->
+                    (sequence.GetAsyncEnumerator ctx.CancellationToken,
+                     fun enumerator ctx ->
                          while enumerator.MoveNextAsync()
                                |> AsyncHelpers.Await do
-                             check ct
-                             body enumerator.Current ct
-                         check ct)
-                    ct
+                             check ctx.CancellationToken
+                             body enumerator.Current ctx
+                         check ctx.CancellationToken)
+                    ctx
 
 [<AutoOpen>]
 module Async2BuilderAwaitableExtensions =
