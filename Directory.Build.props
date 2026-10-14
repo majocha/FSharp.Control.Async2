@@ -5,6 +5,7 @@
     <RuntimeAsyncBin Condition="'$(RuntimeAsyncBin)' == ''">c:\dev\repos\fsharp\artifacts\bin</RuntimeAsyncBin>
     <DisableImplicitFSharpCoreReference>true</DisableImplicitFSharpCoreReference>
     <DotnetFscCompilerPath>$(RuntimeAsyncBin)\fsc\Release\net11.0\fsc.dll</DotnetFscCompilerPath>
+    <LangVersion>preview</LangVersion>
   </PropertyGroup>
 
   <ItemGroup Condition="'$(MSBuildProjectExtension)' == '.fsproj'">
