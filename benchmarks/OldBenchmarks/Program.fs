@@ -11,6 +11,7 @@ open System.Globalization
 
 open Microsoft.FSharp.Control
 open BenchmarkDotNet.Running
+open System.Threading.Tasks
 
 // --- Helper functions for cancellation cases ---
 [<AutoOpen>]
@@ -18,6 +19,7 @@ module Cases =
     // --- Simple recursion (tail call) ---
 
     let rec syncLoopTc n = async2 {
+        do! Task.Yield()
         if n = 250_000 then
             return n
         else
@@ -27,6 +29,7 @@ module Cases =
     // --- Mutual recursion (tail call) ---
 
     let rec syncMutATc n = async2 {
+        do! Task.Yield()
         if n = 250_000 then
             return n
         else
@@ -34,6 +37,7 @@ module Cases =
 
     }
     and syncMutBTc n = async2 {
+        do! Task.Yield()
         if n = 250_000 then
             return n
         else
@@ -44,6 +48,8 @@ module Cases =
     // --- Simple recursion (non-tail call) ---
 
     let rec syncLoop n = async2 {
+        do! Task.Yield()
+
         if n = 250_000 then
             return n
         else
@@ -56,6 +62,7 @@ module Cases =
     // --- Mutual recursion (non-tail call) ---
 
     let rec syncMutA n = async2 {
+        do! Task.Yield()
         if n = 250_000 then
             return n
         else
@@ -65,6 +72,7 @@ module Cases =
                 ()
     }
     and syncMutB n = async2 {
+        do! Task.Yield()
         if n = 250_000 then
             return n
         else
@@ -79,6 +87,7 @@ module Cases =
     let syncWhile () = async2 {
         let mutable n = 0
         while n < 250_000 do
+            do! Task.Yield()
             n <- n + 1
         return n
     }
@@ -88,6 +97,7 @@ module Cases =
 
     let syncTryWith () = async2 {
         try
+            do! Task.Yield()
             return! syncLoop 0
         with _ ->
             return -1
@@ -98,6 +108,7 @@ module Cases =
     let syncTryFinally () = async2 {
         let mutable finalized = false
         try
+            do! Task.Yield()
             let! res = syncLoop 0
             return res
         finally
@@ -111,6 +122,7 @@ module Cases =
             return s
         else
             try
+                do! Task.Yield()
                 return! syncStringLoop (s + "a")
             finally
                 ()
@@ -119,6 +131,7 @@ module Cases =
     let syncStringWhile () = async2 {
         let mutable s = ""
         while String.length s < 25_000 do
+            do! Task.Yield()
             s <- s + "x"
         return s
     }
@@ -126,6 +139,7 @@ module Cases =
     // --- Deep recursive exception-catching (from Simple.fs) ---
     let rec syncExceptionCatchFoo n = async2 {
         try
+            do! Task.Yield()
             if n = 42 then failwith "We are really gone."
             if n = 0 then
                 return 0
