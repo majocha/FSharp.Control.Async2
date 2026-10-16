@@ -271,10 +271,11 @@ type AsyncSeq2Builder() =
 
     member inline _.Bind
         (
-            [<InlineIfLambda>] source: Async2BuilderSources.Cold<'U>,
+            [<InlineIfLambda>] source: Async2BuilderSources.Cold<_, 'U>,
             [<InlineIfLambda>] continuation: 'U -> seq<AsyncSeq2Step<'T>>
         ) =
-        continuation (source.Invoke(StateMachineHelpers.__runtimeAsyncSequenceCancellationToken ()))
+        let ctx = Async2Context(StateMachineHelpers.__runtimeAsyncSequenceCancellationToken (), null)
+        continuation (source.Invoke(ctx))
 
     member inline _.Run([<InlineIfLambda>] recipe: unit -> seq<AsyncSeq2Step<'T>>) : IAsyncEnumerable<'T> =
         StateMachineHelpers.__runtimeAsyncSequence recipe |> AsyncSeq2Core<'T>.Create :> _
@@ -284,10 +285,10 @@ module AsyncSeq2BuilderSourceExtensionsLowPriority =
     type AsyncSeq2Builder with
 
         member inline _.Source(awaitable) =
-            Async2BuilderSources.startAwaitable awaitable
+            Async2BuilderSources.startedOfAwaitable awaitable
 
         member inline _.Source([<InlineIfLambda>] coldAwaitable) =
-            Async2BuilderSources.startAwaitable (coldAwaitable ())
+            Async2BuilderSources.startedOfAwaitable (coldAwaitable ())
 
         member inline _.Source([<InlineIfLambda>] cancellableAwaitable) =
             Async2BuilderSources.startCancellableAwaitable cancellableAwaitable
@@ -296,10 +297,10 @@ module AsyncSeq2BuilderSourceExtensionsLowPriority =
 module AsyncSeq2BuilderSourceExtensionsMediumPriority =
     type AsyncSeq2Builder with
         member inline _.Source(task: #Task<_>) =
-            Async2BuilderSources.startAwaitable task
+            Async2BuilderSources.startedOfAwaitable task
 
         member inline _.Source(computation: Async2<'T>) =
-            Async2BuilderSources.Cold(fun ct -> computation.StartTrampolined ct |> AsyncHelpers.Await)
+            Async2BuilderSources.Cold(fun ctx -> computation.StartTrampolined ctx.CancellationToken |> AsyncHelpers.Await)
 
         member inline _.Source(source: seq<'T>) = source
         member inline _.Source(source: IAsyncEnumerable<'T>) = source
@@ -321,16 +322,16 @@ module AsyncSeq2BuilderSourceExtensionsHighPriority =
             Async2BuilderSources.Started(fun () -> AsyncHelpers.Await task)
 
         member inline _.Source([<InlineIfLambda>] createTask: CancellationToken -> Task<'T>) =
-            Async2BuilderSources.Cold(fun ct -> AsyncHelpers.Await(createTask ct))
+            Async2BuilderSources.Cold(fun ctx -> AsyncHelpers.Await(createTask ctx.CancellationToken))
 
         member inline _.Source([<InlineIfLambda>] createTask: CancellationToken -> Task) =
-            Async2BuilderSources.Cold(fun ct -> AsyncHelpers.Await(createTask ct))
+            Async2BuilderSources.Cold(fun ctx -> AsyncHelpers.Await(createTask ctx.CancellationToken))
 
         member inline _.Source([<InlineIfLambda>] createTask: CancellationToken -> ValueTask<'T>) =
-            Async2BuilderSources.Cold(fun ct -> AsyncHelpers.Await(createTask ct))
+            Async2BuilderSources.Cold(fun ctx -> AsyncHelpers.Await(createTask ctx.CancellationToken))
 
         member inline _.Source([<InlineIfLambda>] createTask: CancellationToken -> ValueTask) =
-            Async2BuilderSources.Cold(fun ct -> AsyncHelpers.Await(createTask ct))
+            Async2BuilderSources.Cold(fun ctx -> AsyncHelpers.Await(createTask ctx.CancellationToken))
 
 [<AutoOpen>]
 module AsyncSeq2BuilderInstance =
