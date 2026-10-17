@@ -364,16 +364,6 @@ type Async2Builder() =
                 body item ctx
             check ctx.CancellationToken
 
-    member inline _.Source(computation: Async2<'T>) = computation
-
-    member inline _.Bind(computation: Async2<'T>, [<InlineIfLambda>] continuation) : Async2Code<'R, 'U> =
-        fun ctx ->
-            check ctx.CancellationToken
-            let result =
-                computation.StartTrampolined ctx.CancellationToken
-                |> ExceptionCache.Await
-            continuation result ctx
-
     member inline _.Bind([<InlineIfLambda>] source: Source<'T>, [<InlineIfLambda>] continuation) : Async2Code<_, 'U> =
         fun ctx ->
             check ctx.CancellationToken
@@ -381,6 +371,17 @@ type Async2Builder() =
 
     member inline _.ReturnFrom([<InlineIfLambda>] source: Source<'T>) : Async2Code<_, 'T> =
         fun ctx -> source.Invoke ctx.CancellationToken
+
+    member inline _.ReturnFromFinal([<InlineIfLambda>] source: Source<'T>) : Async2Code<_, 'T> =
+        fun ctx -> source.Invoke ctx.CancellationToken
+
+    member inline _.MergeSources([<InlineIfLambda>] left: Source<'A>, [<InlineIfLambda>] right: Source<'B>) =
+        merge left right
+
+    member inline _.Run([<InlineIfLambda>] code: Async2Code<'T, 'T>) : Async2<'T> =
+        Async2(fun ctx -> __runtimeAsyncReturnValueTask(code ctx))
+
+    member inline _.Source(computation: Async2<'T>) = computation
 
     member inline _.ReturnFrom(computation: Async2<'T>) : Async2Code<_, 'T> =
         fun ctx -> computation.StartTrampolined ctx.CancellationToken |> ExceptionCache.Await
@@ -402,11 +403,13 @@ type Async2Builder() =
                 computation.HandOff tail
                 Unchecked.defaultof<_>
 
-    member inline _.ReturnFromFinal([<InlineIfLambda>] source: Source<'T>) : Async2Code<_, 'T> =
-        fun ctx -> source.Invoke ctx.CancellationToken
-
-    member inline _.MergeSources([<InlineIfLambda>] left: Source<'A>, [<InlineIfLambda>] right: Source<'B>) =
-        merge left right
+    member inline _.Bind(computation: Async2<'T>, [<InlineIfLambda>] continuation) : Async2Code<'R, 'U> =
+        fun ctx ->
+            check ctx.CancellationToken
+            let result =
+                computation.StartTrampolined ctx.CancellationToken
+                |> ExceptionCache.Await
+            continuation result ctx
 
     member inline _.MergeSources(left: Async2<'A>, [<InlineIfLambda>] right: Source<'B>) =
         merge (ofAsync2 left) right
@@ -414,8 +417,8 @@ type Async2Builder() =
     member inline _.MergeSources([<InlineIfLambda>] left: Source<'A>, right: Async2<'B>) =
         merge left (ofAsync2 right)
 
-    member inline _.Run([<InlineIfLambda>] code: Async2Code<'T, 'T>) : Async2<'T> =
-        Async2(fun ctx -> __runtimeAsyncReturnValueTask(code ctx))
+    member inline _.MergeSources(left: Async2<'A>, right: Async2<'B>) =
+        merge (ofAsync2 left) (ofAsync2 right)
 
 [<AutoOpen>]
 module Async2BuilderAsyncDisposableExtensions =

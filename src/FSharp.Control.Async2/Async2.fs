@@ -501,24 +501,18 @@ type Async2 =
 
 [<AutoOpen>]
 module Async2TaskLikeExtensions =
+    // Prefer the SRTP sources while the concrete awaitable type is still unknown.
+    open Async2BuilderAwaitableExtensions
+
     type Async2 with
         [<NoEagerConstraintApplication>]
-        static member inline Await< ^TaskLike, ^Awaiter, 'T
-            when ^TaskLike: (member GetAwaiter: unit -> ^Awaiter)
-            and ^Awaiter :> ICriticalNotifyCompletion
-            and ^Awaiter: (member get_IsCompleted: unit -> bool)
-            and ^Awaiter: (member GetResult: unit -> 'T)>
-            (task: ^TaskLike)
+        static member inline Await(task: AwaitableHelpers.Awaitable<_, _, _>)
             : Async2<'T> = async2 { return! task }
 
         [<NoEagerConstraintApplication>]
-        static member inline StartTaskImmediate< ^TaskLike, ^Awaiter, 'T
-            when ^TaskLike: (member GetAwaiter: unit -> ^Awaiter)
-            and ^Awaiter :> ICriticalNotifyCompletion
-            and ^Awaiter: (member get_IsCompleted: unit -> bool)
-            and ^Awaiter: (member GetResult: unit -> 'T)>
-            (createTask: CancellationToken -> ^TaskLike)
-            : Async2<'T> = async2 {let! ct = Async2.CancellationToken in return! createTask ct}
+        static member inline StartTaskImmediate
+            (createTask: AwaitableHelpers.CancellableAwaitable<_, _, _>)
+            : Async2<'T> = async2 { return! createTask }
 
 [<AutoOpen>]
 module CommonExtensions =

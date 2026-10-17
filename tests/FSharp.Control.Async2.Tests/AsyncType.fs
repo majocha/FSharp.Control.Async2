@@ -804,6 +804,17 @@ module AsyncAwaitTaskLikeTests =
     type MyUnitTask(inner: Task) =
         member _.GetAwaiter() = inner.GetAwaiter()
 
+    let inline private awaitTaskLike (awaitable: AwaitableHelpers.Awaitable<_, _, _>) =
+        Async2.Await<_, _, _> awaitable
+
+    [<Fact>]
+    let ``Await supports generic task-like forwarding``() =
+        let result =
+            Task.FromResult(42).ConfigureAwait(false)
+            |> awaitTaskLike
+            |> asyncWaitImm
+        Assert.Equal(42, result)
+
     [<Fact>]
     let ``Await(task-like) happy path with result``() =
         let a =
@@ -897,6 +908,23 @@ module AsyncAwaitTaskLikeTests =
         Assert.Equal(42, result)
 
 module AsyncStartTaskImmediateTaskLikeTests =
+
+    let inline private startTaskLike (createTask: AwaitableHelpers.CancellableAwaitable<_, _, _>) =
+        Async2.StartTaskImmediate<_, _, _> createTask
+
+    [<Fact>]
+    let ``StartTaskImmediate supports generic task-like forwarding``() =
+        use cts = new CancellationTokenSource()
+        let mutable calls = 0
+        let computation =
+            startTaskLike (fun ct ->
+                Assert.Equal(cts.Token, ct)
+                calls <- calls + 1
+                Task.FromResult(calls).ConfigureAwait(false))
+
+        Assert.Equal(0, calls)
+        Assert.Equal(1, asyncWaitWithCtImm cts.Token computation)
+        Assert.Equal(2, asyncWaitWithCtImm cts.Token computation)
 
     [<Fact>]
     let ``StartTaskImmediate(YieldAwaitable factory) yields and resumes``() =
