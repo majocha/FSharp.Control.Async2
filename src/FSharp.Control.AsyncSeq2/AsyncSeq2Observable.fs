@@ -1,7 +1,6 @@
 namespace Microsoft.FSharp.Control
 
 open System
-open System.Collections.Generic
 open System.Threading
 open System.Threading.Channels
 open System.Threading.Tasks

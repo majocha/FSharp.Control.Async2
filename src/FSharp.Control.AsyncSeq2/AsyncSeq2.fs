@@ -1,6 +1,5 @@
 namespace Microsoft.FSharp.Control
 
-open System
 open System.Collections.Generic
 
 type AsyncSeq2<'T> = IAsyncEnumerable<'T>

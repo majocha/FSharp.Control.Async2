@@ -4,9 +4,9 @@ open System
 open System.Runtime.CompilerServices
 open System.Threading
 open System.Threading.Tasks
-open System.Threading.Tasks.Sources
 open System.Collections.Generic
 open Microsoft.FSharp.Core.CompilerServices
+open System.Runtime.ExceptionServices
 
 module AwaitableHelpers =
 
@@ -41,34 +41,6 @@ module AwaitableHelpers =
         let inline getAwaiter (awaitable: Awaitable<_, _, _>) = awaitable.GetAwaiter()
 
 open AwaitableHelpers
-open System.Runtime.ExceptionServices
-
-/// The state threaded through builder code: the cancellation token and, when the computation was
-/// started by a tail-call loop, the box a final `return!` hands its callee to. `'R` is the result type
-/// of the whole computation expression, so a final `return!` is known to produce exactly that type.
-[<Struct; NoEquality; NoComparison>]
-type Async2Context<'R> = {
-        CancellationToken: CancellationToken
-        Tail: TailBox<'R> voption
-    }
-
-and Async2Invocation<'R> = Async2Context<'R> -> Task<'R>
-
-/// Carries the next computation of a tail-call chain from a finished frame back to the loop that owns the chain.
-and [<Sealed; NoEquality; NoComparison>] TailBox<'R>() =
-    let mutable next = None
-
-    member _.HasNext = next.IsSome
-
-    member _.Set(start: Async2Invocation<'R>) = next <- Some start
-
-    member _.Take() =
-        let value = next.Value
-        next <- None
-        value
-
-module Async2Context =
-    let create ct = { CancellationToken = ct; Tail = ValueNone }
 
 module ExceptionCache =
     let store = ConditionalWeakTable<exn, ExceptionDispatchInfo>()
@@ -97,38 +69,32 @@ module ExceptionCache =
         with exn ->
             Throw exn
 
-module Async2BuilderSources =
+/// The state threaded through builder code: the cancellation token and, when the computation was
+/// started by a tail-call loop, the box a final `return!` hands its callee to. `'R` is the result type
+/// of the whole computation expression, so a final `return!` is known to produce exactly that type.
+[<Struct; NoEquality; NoComparison>]
+type Async2Context<'R> = {
+        CancellationToken: CancellationToken
+        Tail: TailBox<'R> voption
+    }
 
-    type Source<'T> = delegate of CancellationToken -> 'T
+and Async2Invocation<'R> = Async2Context<'R> -> Task<'R>
 
-    let inline ofAwaitable awaitable =
-        let awaiter = Awaitable.getAwaiter awaitable
+/// Carries the next computation of a tail-call chain from a finished frame back to the loop that owns the chain.
+and [<Sealed; NoEquality; NoComparison>] TailBox<'R>() =
+    let mutable next = None
 
-        Source(fun _ ->
-            if not (Awaiter.isCompleted awaiter) then
-                AsyncHelpers.UnsafeAwaitAwaiter awaiter
-            Awaiter.getResult awaiter
-        )
+    member _.HasNext = next.IsSome
 
-    let inline ofCancellableAwaitable cancellableAwaitable =
-        Source(fun ct ->
-            let awaiter =
-                cancellableAwaitable ct
-                |> Awaitable.getAwaiter
+    member _.Set(start: Async2Invocation<'R>) = next <- Some start
 
-            if not (Awaiter.isCompleted awaiter) then
-                AsyncHelpers.UnsafeAwaitAwaiter awaiter
-            Awaiter.getResult awaiter
-        )
+    member _.Take() =
+        let value = next.Value
+        next <- None
+        value
 
-    let inline merge (left: Source<'A>) (right: Source<'B>) =
-        Source(fun ct ->
-            let right = __runtimeAsyncReturn (right.Invoke ct)
-            let left = left.Invoke ct
-            struct (left, right |> AsyncHelpers.Await))
-
-
-open Async2BuilderSources
+module Async2Context =
+    let create ct = { CancellationToken = ct; Tail = ValueNone }
 
 module internal Async2StartTrampoline =
     [<AllowNullLiteral>]
@@ -257,6 +223,36 @@ module internal Async2StartTrampoline =
         finally
             StateHolder.Set(previous)
 
+module Async2BuilderSources =
+
+    type Source<'T> = delegate of CancellationToken -> 'T
+
+    let inline ofAwaitable awaitable =
+        let awaiter = Awaitable.getAwaiter awaitable
+
+        Source(fun _ ->
+            if not (Awaiter.isCompleted awaiter) then
+                AsyncHelpers.UnsafeAwaitAwaiter awaiter
+            Awaiter.getResult awaiter
+        )
+
+    let inline ofCancellableAwaitable cancellableAwaitable =
+        Source(fun ct ->
+            let awaiter =
+                cancellableAwaitable ct
+                |> Awaitable.getAwaiter
+
+            if not (Awaiter.isCompleted awaiter) then
+                AsyncHelpers.UnsafeAwaitAwaiter awaiter
+            Awaiter.getResult awaiter
+        )
+
+    let inline merge (left: Source<'A>) (right: Source<'B>) =
+        Source(fun ct ->
+            let right = __runtimeAsyncReturn (right.Invoke ct)
+            let left = left.Invoke ct
+            struct (left, right |> AsyncHelpers.Await))
+
 [<Struct; NoEquality; NoComparison; CompiledName("FSharpAsync2`1")>]
 type Async2<'T> (start: Async2Invocation<'T>) =
 
@@ -279,6 +275,8 @@ type Async2<'T> (start: Async2Invocation<'T>) =
 
 /// Builder code: `'R` is the result type of the whole computation, `'T` the type of this piece.
 type Async2Code<'R, 'T> = Async2Context<'R> -> 'T
+
+open Async2BuilderSources
 
 module Async2Builder =
     let inline isAlreadyBackground () =

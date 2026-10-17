@@ -2,7 +2,6 @@ namespace Microsoft.FSharp.Control.AsyncSeq2Implementation
 
 open System
 open System.Threading.Tasks
-open Microsoft.FSharp.Control
 
 module ValueTask =
     let False = ValueTask<bool>()

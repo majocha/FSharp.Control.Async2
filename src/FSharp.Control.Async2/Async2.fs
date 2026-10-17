@@ -7,13 +7,11 @@ namespace Microsoft.FSharp.Control
 open System
 open System.IO
 open System.Net
-open System.Runtime.CompilerServices
 open System.Threading
 open System.Threading.Tasks
 
 open Microsoft.FSharp.Core
 open Microsoft.FSharp.Core.CompilerServices
-open Microsoft.FSharp.Core.CompilerServices.StateMachineHelpers
 
 module internal Async2RuntimeHelpers =
     type TaskCompletionSourceWithCancellation<'T>(cancellationToken: CancellationToken) =

@@ -4,9 +4,6 @@ open System
 open System.Collections.Generic
 open System.Threading
 open System.Threading.Tasks
-open System.Threading.Tasks.Sources
-open Microsoft.FSharp.Core.CompilerServices
-open System.Runtime.CompilerServices
 
 /// A reply channel for MailboxProcessor2.PostAndAsyncReply.
 [<Sealed; CompiledName("FSharpAsyncReplyChannel2`1")>]

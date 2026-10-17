@@ -706,3 +706,12 @@ module TestUtils =
             this.Add SeqWithSideEffect.ThreadSpinWait
             this.Add SeqWithSideEffect.AsyncYielded
             this.Add SeqWithSideEffect.AsyncYielded_Nested
+
+namespace Microsoft.FSharp.Control
+
+open Microsoft.FSharp.Control.AsyncSeq2Implementation
+
+[<AutoOpen>]
+module TaskShim =
+
+    let task = runtimeTask

@@ -5,7 +5,6 @@ open Microsoft.FSharp.Control
 open System.Collections.Generic
 open System.Threading
 open System.Threading.Tasks
-open Microsoft.FSharp.Core.CompilerServices
 open System.Runtime.CompilerServices
 
 type AsyncSeq2<'T> = IAsyncEnumerable<'T>

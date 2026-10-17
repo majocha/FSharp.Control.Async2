@@ -1,13 +1,11 @@
 namespace Microsoft.FSharp.Control
 
 open System
-open System.Collections.Generic
 open System.Runtime.CompilerServices
 open System.Threading
 open System.Threading.Channels
 open System.Threading.Tasks
 open Microsoft.FSharp.Control.AsyncSeq2Implementation
-open Microsoft.FSharp.Core.CompilerServices
 
 [<AutoOpen>]
 module AsyncSeq2ConcurrentOperations =

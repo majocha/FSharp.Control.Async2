@@ -1,6 +1,5 @@
 namespace Microsoft.FSharp.Control
 
-open System
 open System.Threading.Tasks
 
 type private AsyncSeq2SrcNode<'T> =

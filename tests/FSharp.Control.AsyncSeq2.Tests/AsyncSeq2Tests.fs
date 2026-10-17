@@ -5,7 +5,6 @@ open System.Collections.Generic
 open System.Threading
 open System.Threading.Tasks
 open Microsoft.FSharp.Control
-open Microsoft.FSharp.Control.AsyncSeq2Implementation
 open Xunit
 
 let private run computation = Async2.RunSynchronouslyImmediate computation
