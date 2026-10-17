@@ -7,29 +7,8 @@ open System.Threading
 open System.Threading.Tasks
 
 open Microsoft.FSharp.Control
+open Microsoft.FSharp.Control.AwaitableHelpers
 open Microsoft.FSharp.Core.CompilerServices
-
-module TasklikeHelpers =
-
-    /// A structure that looks like an Awaiter
-    type Awaiter<'Awaiter, 'TResult
-        when 'Awaiter :> ICriticalNotifyCompletion
-        and 'Awaiter: (member get_IsCompleted: unit -> bool)
-        and 'Awaiter: (member GetResult: unit -> 'TResult)> = 'Awaiter
-
-    type Awaitable<'Awaitable, 'Awaiter, 'TResult
-        when 'Awaitable: (member GetAwaiter: unit -> Awaiter<'Awaiter, 'TResult>)> = 'Awaitable
-
-    module Awaiter =
-        let inline isCompleted (awaiter: Awaiter<_, _>) = awaiter.get_IsCompleted ()
-        let inline getResult (awaiter: Awaiter<_, _>) = awaiter.GetResult()
-        let inline onCompleted (awaiter: Awaiter<_, _>) continuation = awaiter.OnCompleted continuation
-        let inline unsafeOnCompleted (awaiter: Awaiter<_, _>) continuation = awaiter.UnsafeOnCompleted continuation
-
-    module Awaitable =
-        let inline getAwaiter (awaitable: Awaitable<_, _, _>) = awaitable.GetAwaiter()
-
-open TasklikeHelpers
 
 module RuntimeAsyncBuilderHelpers =
 
