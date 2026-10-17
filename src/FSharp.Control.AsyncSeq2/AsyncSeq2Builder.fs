@@ -274,7 +274,7 @@ type AsyncSeq2Builder() =
             [<InlineIfLambda>] source: Async2BuilderSources.Cold<_, 'U>,
             [<InlineIfLambda>] continuation: 'U -> seq<AsyncSeq2Step<'T>>
         ) =
-        let ctx = Async2Context(StateMachineHelpers.__runtimeAsyncSequenceCancellationToken (), null)
+        let ctx = Async2Context(StateMachineHelpers.__runtimeAsyncSequenceCancellationToken ())
         continuation (source.Invoke(ctx))
 
     member inline _.Run([<InlineIfLambda>] recipe: unit -> seq<AsyncSeq2Step<'T>>) : IAsyncEnumerable<'T> =

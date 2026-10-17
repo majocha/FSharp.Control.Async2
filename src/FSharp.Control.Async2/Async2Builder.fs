@@ -43,28 +43,30 @@ module AwaitableHelpers =
 open AwaitableHelpers
 open System.Runtime.ExceptionServices
 
-
-/// Carries the next computation of a tail-call chain from a finished frame back to the loop that owns the chain.
-[<AllowNullLiteral; Sealed; System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)>]
-type TailBox<'T>() =
-    let mutable next = Unchecked.defaultof<CancellationToken -> TailBox<'T> -> ValueTask<'T>>
-    member _.HasNext = not (isNull (box next))
-
-    member _.Set(start: CancellationToken -> TailBox<'T> -> ValueTask<'T>) = next <- start
-
-    member _.Take() =
-        let value = next
-        next <- Unchecked.defaultof<_>
-        value
-
 /// The state threaded through builder code: the cancellation token and, when the computation was
 /// started by a tail-call loop, the box a final `return!` hands its callee to. `'R` is the result type
 /// of the whole computation expression, so a final `return!` is known to produce exactly that type.
-[<Struct; NoEquality; NoComparison; System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)>]
+[<Struct; NoEquality; NoComparison>]
 type Async2Context<'R> =
     val CancellationToken: CancellationToken
-    val Tail: TailBox<'R>
-    new(cancellationToken, tail) = { CancellationToken = cancellationToken; Tail = tail }
+    val Tail: TailBox<'R> option
+    new(cancellationToken) = { CancellationToken = cancellationToken; Tail = None }
+    new(cancellationToken, tail) = { CancellationToken = cancellationToken; Tail = Some tail }
+
+and Async2Invocation<'R> = Async2Context<'R> -> ValueTask<'R>
+
+/// Carries the next computation of a tail-call chain from a finished frame back to the loop that owns the chain.
+and [<Sealed; NoEquality; NoComparison>] TailBox<'R>() =
+    let mutable next = None
+
+    member _.HasNext = next.IsSome
+
+    member _.Set(start: Async2Invocation<'R>) = next <- Some start
+
+    member _.Take() =
+        let value = Option.get next
+        next <- None
+        value
 
 module ExceptionCache =
     let store = ConditionalWeakTable<exn, ExceptionDispatchInfo>()
@@ -168,59 +170,44 @@ module internal Async2StartTrampoline =
             finally
                 current.IsRunning <- false
 
-    type private QueuedStart<'T>(start: CancellationToken -> TailBox<'T> -> ValueTask<'T>, cancellationToken: CancellationToken) =
-        static let runInContext = ContextCallback(fun state -> (state :?> QueuedStart<'T>).Start())
-        let mutable source = ManualResetValueTaskSourceCore<'T>()
-        let mutable awaiter = Unchecked.defaultof<ConfiguredValueTaskAwaitable<'T>.ConfiguredValueTaskAwaiter>
+    type private QueuedStart<'T>(start: Async2Invocation<'T>, ctx: Async2Context<'T>) =
+        let source = ManualResetValueTaskSourceCore<'T>()
 
-        member private _.Complete() =
-            let mutable result = Unchecked.defaultof<'T>
-            let mutable error = null
+        // The queue is drained after the parent has returned or suspended, so the child must
+        // run in the execution context the parent had when it asked for the start.
+        let capturedContext = ExecutionContext.Capture()
 
-            try
-                result <- awaiter.GetResult()
-            with caught ->
-                error <- caught
-
-            if isNull error then
-                source.SetResult(result)
-            else
-                source.SetException(error)
-
-        member private this.Start() =
-            let mutable error = null
-            let mutable completed = false
-
-            try
-                // Do not capture a scheduling context for this internal completion bridge.
-                let current = StateHolder.Get()
-                current.Depth <- current.Depth + 1
-                let pending =
-                    try
-                        start cancellationToken null
-                    finally
-                        current.Depth <- current.Depth - 1
-                awaiter <- pending.ConfigureAwait(false).GetAwaiter()
-                completed <- awaiter.IsCompleted
-            with caught ->
-                error <- caught
-
-            if not (isNull error) then
-                source.SetException(error)
-            elif completed then
-                this.Complete()
-            else
+        let start () =
+            // Do not capture a scheduling context for this internal completion bridge.
+            let current = StateHolder.Get()
+            current.Depth <- current.Depth + 1
+            let pending =
                 try
-                    awaiter.UnsafeOnCompleted(Action(fun () ->
-                        enqueueCompletion (fun () -> this.Complete())))
-                with error ->
-                    source.SetException(error)
+                    start ctx
+                finally
+                    current.Depth <- current.Depth - 1
 
-        member this.Run(context: ExecutionContext) =
-            if isNull context then
-                this.Start()
+            let awaiter = pending.ConfigureAwait(false).GetAwaiter()
+
+            let complete () =
+                try 
+                    let result = awaiter.GetResult()
+                    source.SetResult(result)
+                with error -> 
+                    source.SetException(error)            
+
+            if awaiter.IsCompleted then
+                complete ()
             else
-                ExecutionContext.Run(context, runInContext, this)
+                awaiter.UnsafeOnCompleted(fun () -> enqueueCompletion complete)
+
+        let startProtected _ = try start () with error -> source.SetException(error)
+
+        member this.Run() =
+            if isNull capturedContext then
+                startProtected ()
+            else
+                ExecutionContext.Run(capturedContext, startProtected, null)
 
         member this.ValueTask = ValueTask<'T>(this, source.Version)
 
@@ -230,8 +217,10 @@ module internal Async2StartTrampoline =
             member _.OnCompleted(continuation, state, token, flags) =
                 source.OnCompleted(continuation, state, token, flags)
 
-    let start<'T> (start: CancellationToken -> TailBox<'T> -> ValueTask<'T>) (cancellationToken: CancellationToken) =
+    let start (start: Async2Invocation<'T>) (cancellationToken: CancellationToken) =
         let current = StateHolder.Get()
+
+        let ctx = Async2Context cancellationToken
 
         if current.IsRunning then
             // Runtime-async continuation frames can outgrow the trampoline's nested-start depth.
@@ -242,51 +231,44 @@ module internal Async2StartTrampoline =
                 current.Depth <- current.Depth + 1
                 try
                     try
-                        start cancellationToken null
+                        start ctx
                     with error ->
                         ValueTask.FromException<'T>(error)
                 finally
                     current.Depth <- current.Depth - 1
             else
-                let completion = QueuedStart<'T>(start, cancellationToken)
-                // The queue is drained after the parent has returned or suspended, so the child must
-                // run in the execution context the parent had when it asked for the start.
-                let context = ExecutionContext.Capture()
-                current.Queue.Enqueue(fun () -> completion.Run(context))
+                let completion = QueuedStart<'T>(start, ctx)
+
+                current.Queue.Enqueue(completion.Run)
                 completion.ValueTask
         else
             current.IsRunning <- true
 
             try
-                start cancellationToken null
+                start ctx
             finally
                 try
                     drain current
                 finally
                     current.IsRunning <- false
 
-    let startIsolated<'T> (startComputation: CancellationToken -> TailBox<'T> -> ValueTask<'T>, cancellationToken: CancellationToken) =
+    let startIsolated<'T> (startComputation: Async2Invocation<'T>, cancellationToken) =
         let previous = StateHolder.Get()
         StateHolder.Set(State())
 
         try
-            startComputation cancellationToken null
+            Async2Context cancellationToken |> startComputation
         finally
             StateHolder.Set(previous)
 
 [<Struct; NoEquality; NoComparison; CompiledName("FSharpAsync2`1")>]
-type Async2<'T> private (start: CancellationToken -> TailBox<'T> -> ValueTask<'T>) =
-    new (start: CancellationToken -> ValueTask<'T>) = Async2<'T>(fun ct _ -> start ct)
+type Async2<'T> (start: Async2Invocation<'T>) =
 
-    member _.Start ct = start ct null |> _.AsTask()
-
-    /// Builder-produced computations receive the tail box; custom ones ignore it.
-    [<System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)>]
-    static member FromTailStart(start: CancellationToken -> TailBox<'T> -> ValueTask<'T>) = Async2<'T>(start)
+    member _.StartAsTask ct = Async2Context ct |> start |> _.AsTask()
 
     // Starts directly: the tail box must reach the callee's own frame, so this bypasses the trampoline queue.
     [<System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)>]
-    member _.StartTail(tail: TailBox<'T>, ct: CancellationToken) = start ct tail
+    member _.StartTail ctx = start ctx
 
     [<System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)>]
     member _.HandOff(tail: TailBox<'T>) = tail.Set start
@@ -306,11 +288,12 @@ type Async2TailCall =
     static member Loop<'T>(first: Async2<'T>, ct: CancellationToken) : ValueTask<'T> =
         __runtimeAsyncReturnValueTask (
             let tail = TailBox<'T>()
-            let mutable result = first.StartTail(tail, ct) |> ExceptionCache.Await
+            let ctx = Async2Context(ct, tail)
+            let mutable result = first.StartTail(ctx) |> ExceptionCache.Await
 
             while tail.HasNext do
                 let next = tail.Take()
-                result <- next ct tail |> ExceptionCache.Await
+                result <- next ctx |> ExceptionCache.Await
 
             result
         )
@@ -429,10 +412,11 @@ type Async2Builder() =
     // (this frame was not started by a loop) this frame becomes the loop.
     member inline _.ReturnFromFinal(computation: Async2<'R>) : Async2Code<'R, 'R> =
         fun ctx ->
-            if isNull ctx.Tail then
+            match ctx.Tail with
+            | None ->
                 Async2TailCall.Loop(computation, ctx.CancellationToken) |> AsyncHelpers.Await
-            else
-                computation.HandOff ctx.Tail
+            | Some tail ->
+                computation.HandOff tail
                 Unchecked.defaultof<'R>
 
     member inline _.MergeSources([<InlineIfLambda>] left: Started<'A>, [<InlineIfLambda>] right: Started<'B>) =
@@ -482,8 +466,7 @@ type Async2Builder() =
     member inline _.Source(computation: Async2<'T>) = computation
 
     member inline _.Run([<InlineIfLambda>] code: Async2Code<'T, 'T>) : Async2<'T> =
-        Async2<'T>.FromTailStart(fun ct tail ->
-            __runtimeAsyncReturnValueTask (code (Async2Context<'T>(ct, tail))))
+        Async2(fun ctx -> __runtimeAsyncReturnValueTask(code ctx))
 
 [<AutoOpen>]
 module Async2BuilderAsyncDisposableExtensions =

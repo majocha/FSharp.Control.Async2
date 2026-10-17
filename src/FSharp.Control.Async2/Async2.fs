@@ -58,12 +58,12 @@ module internal Async2RuntimeHelpers =
         defaultArg token (getDefaultCancellationToken ())
 
     let startOnThreadPool cancellationToken (computation: Async2<_>) =
-        Task.Run<'T>(fun () -> computation.Start cancellationToken)
+        Task.Run<'T>(fun () -> computation.StartAsTask cancellationToken)
 
     let startImmediate cancellationToken (computation: Async2<_>) =
         (computation.StartInIsolatedTrampoline cancellationToken).AsTask()
 
-    let cancellationTokenAsync = Async2(fun ct -> ValueTask<CancellationToken>(ct))
+    let cancellationTokenAsync = Async2(fun ctx -> ValueTask<CancellationToken>(ctx.CancellationToken))
 
 open Async2RuntimeHelpers
 open System.Runtime.ExceptionServices
@@ -224,7 +224,7 @@ type Async2 =
                                 cts.Cancel()
                         | _ -> ()
                     }
-                    Task.Run<unit>(fun () -> worker.Start innerToken))
+                    Task.Run<unit>(fun () -> worker.StartAsTask innerToken))
 
             try
                 let! completed = Task.WhenAll workers
@@ -296,13 +296,13 @@ type Async2 =
         }
 
     static member SwitchToContext(syncContext: SynchronizationContext | null) : Async2<unit> =
-        Async2(fun ct ->
+        Async2(fun ctx ->
             let completion = TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
 
-            ct.ThrowIfCancellationRequested()
+            ctx.CancellationToken.ThrowIfCancellationRequested()
 
             if isNull syncContext then
-                Task.Run(Action(fun () -> completion.SetResult()), ct)
+                Task.Run(Action(fun () -> completion.SetResult()), ctx.CancellationToken)
                 |> ignore
             else
                 syncContext.Post(

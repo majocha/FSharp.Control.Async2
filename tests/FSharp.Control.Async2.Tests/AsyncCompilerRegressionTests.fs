@@ -14,7 +14,7 @@ module AsyncCompilerRegressionTests =
             computation
         else
             let inner = wrapToQueueDepth (depth - 1) computation
-            Async2<'T>(fun cancellationToken -> inner.StartTrampolined cancellationToken)
+            Async2<'T>(fun ctx -> inner.StartTrampolined ctx.CancellationToken)
 
     type private SingleUseSource<'T>() =
         let mutable source = ManualResetValueTaskSourceCore<'T>()
@@ -284,9 +284,9 @@ module AsyncCompilerRegressionTests =
         let thread =
             Thread(ThreadStart(fun () ->
                 let parent =
-                    Async2<int>(fun ct ->
-                        firstChildTask <- ((async2 { return 42 }).StartTrampolined ct).AsTask()
-                        secondChildTask <- ((async2 { return 43 }).StartTrampolined ct).AsTask()
+                    Async2<int>(fun ctx ->
+                        firstChildTask <- ((async2 { return 42 }).StartTrampolined ctx.CancellationToken).AsTask()
+                        secondChildTask <- ((async2 { return 43 }).StartTrampolined ctx.CancellationToken).AsTask()
                         raise (InvalidOperationException("parent start failed")))
 
                 try
