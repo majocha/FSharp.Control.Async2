@@ -47,11 +47,10 @@ open System.Runtime.ExceptionServices
 /// started by a tail-call loop, the box a final `return!` hands its callee to. `'R` is the result type
 /// of the whole computation expression, so a final `return!` is known to produce exactly that type.
 [<Struct; NoEquality; NoComparison>]
-type Async2Context<'R> =
-    val CancellationToken: CancellationToken
-    val Tail: TailBox<'R> option
-    new(cancellationToken) = { CancellationToken = cancellationToken; Tail = None }
-    new(cancellationToken, tail) = { CancellationToken = cancellationToken; Tail = Some tail }
+type Async2Context<'R> = {
+        CancellationToken: CancellationToken
+        Tail: TailBox<'R> voption
+    }
 
 and Async2Invocation<'R> = Async2Context<'R> -> ValueTask<'R>
 
@@ -64,9 +63,12 @@ and [<Sealed; NoEquality; NoComparison>] TailBox<'R>() =
     member _.Set(start: Async2Invocation<'R>) = next <- Some start
 
     member _.Take() =
-        let value = Option.get next
+        let value = next.Value
         next <- None
         value
+
+module Async2Context =
+    let create ct = { CancellationToken = ct; Tail = ValueNone }
 
 module ExceptionCache =
     let store = ConditionalWeakTable<exn, ExceptionDispatchInfo>()
@@ -97,33 +99,33 @@ module ExceptionCache =
 
 module Async2BuilderSources =
 
-    // A delegate to unify dissimilar builder source types, this allows us to have no additional Bind or MergeSources overloads.
-    // The delegate takes the cancellation token threaded through the builder; its invocation is inlined, so this is zero cost.
-    type Started<'T> = delegate of unit -> 'T
-    // We need to distinguish between hot and cold awaitables, we can pass the cancellation token only to the cold ones.
-    // Ideally the signature should be CancellationToken -> Started<'T>, but the Started<_> delegates execute AsyncHelpers.Await
-    // and must be inlined unconditionally into async method body.
-    type Cold<'R, 'T> = delegate of Async2Context<'R> -> 'T
+    type Source<'T> = delegate of CancellationToken -> 'T
 
-    let inline startedOfAwaitable awaitable =
+    let inline ofAwaitable awaitable =
         let awaiter = Awaitable.getAwaiter awaitable
 
-        Started(fun () ->
+        Source(fun _ ->
             if not (Awaiter.isCompleted awaiter) then
                 AsyncHelpers.UnsafeAwaitAwaiter awaiter
             Awaiter.getResult awaiter
         )
 
-    let inline coldOfCancellableAwaitable cancellableAwaitable =
-        Cold(fun ctx ->
+    let inline ofCancellableAwaitable cancellableAwaitable =
+        Source(fun ct ->
             let awaiter =
-                cancellableAwaitable ctx.CancellationToken
+                cancellableAwaitable ct
                 |> Awaitable.getAwaiter
 
             if not (Awaiter.isCompleted awaiter) then
                 AsyncHelpers.UnsafeAwaitAwaiter awaiter
             Awaiter.getResult awaiter
         )
+
+    let inline merge (left: Source<'A>) (right: Source<'B>) =
+        Source(fun ct ->
+            let right = __runtimeAsyncReturnValueTask (right.Invoke ct)
+            let left = left.Invoke ct
+            struct (left, right |> AsyncHelpers.Await))
 
 
 open Async2BuilderSources
@@ -170,7 +172,7 @@ module internal Async2StartTrampoline =
             finally
                 current.IsRunning <- false
 
-    type private QueuedStart<'T>(start: Async2Invocation<'T>, ctx: Async2Context<'T>) =
+    type private QueuedStart<'T>(start: Async2Invocation<'T>, ct) =
         let source = ManualResetValueTaskSourceCore<'T>()
 
         // The queue is drained after the parent has returned or suspended, so the child must
@@ -183,7 +185,7 @@ module internal Async2StartTrampoline =
             current.Depth <- current.Depth + 1
             let pending =
                 try
-                    start ctx
+                    start ct
                 finally
                     current.Depth <- current.Depth - 1
 
@@ -217,10 +219,10 @@ module internal Async2StartTrampoline =
             member _.OnCompleted(continuation, state, token, flags) =
                 source.OnCompleted(continuation, state, token, flags)
 
-    let start (start: Async2Invocation<'T>) (cancellationToken: CancellationToken) =
-        let current = StateHolder.Get()
+    let start (start: Async2Invocation<'T>) (ct: CancellationToken) =
+        let ctx = Async2Context.create ct
 
-        let ctx = Async2Context cancellationToken
+        let current = StateHolder.Get()
 
         if current.IsRunning then
             // Runtime-async continuation frames can outgrow the trampoline's nested-start depth.
@@ -252,24 +254,23 @@ module internal Async2StartTrampoline =
                 finally
                     current.IsRunning <- false
 
-    let startIsolated<'T> (startComputation: Async2Invocation<'T>, cancellationToken) =
+    let startIsolated<'T> (startComputation: Async2Invocation<'T>, ct) =
         let previous = StateHolder.Get()
         StateHolder.Set(State())
 
         try
-            Async2Context cancellationToken |> startComputation
+            Async2Context.create ct |> startComputation
         finally
             StateHolder.Set(previous)
 
 [<Struct; NoEquality; NoComparison; CompiledName("FSharpAsync2`1")>]
 type Async2<'T> (start: Async2Invocation<'T>) =
 
-    member _.StartAsTask ct = Async2Context ct |> start |> _.AsTask()
+    member _.StartAsTask ct = Async2Context.create ct |> start |> _.AsTask()
 
     // Starts directly: the tail box must reach the callee's own frame, so this bypasses the trampoline queue.
     [<System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)>]
     member _.StartTail ctx = start ctx
-
     [<System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)>]
     member _.HandOff(tail: TailBox<'T>) = tail.Set start
 
@@ -282,22 +283,6 @@ type Async2<'T> (start: Async2Invocation<'T>) =
     member internal _.StartInIsolatedTrampoline ct =
         Async2StartTrampoline.startIsolated (start, ct)
 
-[<AbstractClass; Sealed; System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)>]
-type Async2TailCall =
-    /// Runs `first` and every computation it hands over through a final `return!`, in constant stack.
-    static member Loop<'T>(first: Async2<'T>, ct: CancellationToken) : ValueTask<'T> =
-        __runtimeAsyncReturnValueTask (
-            let tail = TailBox<'T>()
-            let ctx = Async2Context(ct, tail)
-            let mutable result = first.StartTail(ctx) |> ExceptionCache.Await
-
-            while tail.HasNext do
-                let next = tail.Take()
-                result <- next ctx |> ExceptionCache.Await
-
-            result
-        )
-
 /// Builder code: `'R` is the result type of the whole computation, `'T` the type of this piece.
 type Async2Code<'R, 'T> = Async2Context<'R> -> 'T
 
@@ -309,8 +294,8 @@ module Async2Builder =
     let inline check (cancellationToken: CancellationToken) =
         cancellationToken.ThrowIfCancellationRequested()
 
-    let inline coldOf (computation: Async2<'T>) =
-        Cold(fun ctx -> computation.StartTrampolined ctx.CancellationToken |> ExceptionCache.Await)
+    let inline ofAsync2 (computation: Async2<'T>) =
+        Source(fun ct -> computation.StartTrampolined ct |> ExceptionCache.Await)
 
 open Async2Builder
 
@@ -324,23 +309,23 @@ type Async2Builder() =
             let code = generator ()
             code ctx
 
-    member inline _.Zero() : Async2Code<'R, unit> =
+    member inline _.Zero() : Async2Code<_, unit> =
         fun ctx ->
             check ctx.CancellationToken
             ()
 
-    member inline _.Return(value: 'T) : Async2Code<'R, 'T> =
+    member inline _.Return(value: 'T) : Async2Code<_, 'T> =
         fun ctx ->
             check ctx.CancellationToken
             value
 
-    member inline _.Combine([<InlineIfLambda>] first, [<InlineIfLambda>] second) : Async2Code<'R, 'T> =
+    member inline _.Combine([<InlineIfLambda>] first, [<InlineIfLambda>] second) : Async2Code<_,'T> =
         fun ctx ->
             check ctx.CancellationToken
             first (ctx) |> ignore
             second ctx
 
-    member inline _.TryWith ([<InlineIfLambda>] body, [<InlineIfLambda>] handler) : Async2Code<'R, 'T> =
+    member inline _.TryWith ([<InlineIfLambda>] body, [<InlineIfLambda>] handler) : Async2Code<_, 'T> =
         fun ctx ->
             check ctx.CancellationToken
             try
@@ -349,7 +334,7 @@ type Async2Builder() =
                 check ctx.CancellationToken
                 handler error ctx
 
-    member inline _.TryFinally ([<InlineIfLambda>] body, [<InlineIfLambda>] compensation) : Async2Code<'R, 'T> =
+    member inline _.TryFinally ([<InlineIfLambda>] body, [<InlineIfLambda>] compensation) : Async2Code<_, 'T> =
         fun ctx ->
             try
                 check ctx.CancellationToken
@@ -357,7 +342,7 @@ type Async2Builder() =
             finally
                 compensation ()
 
-    member inline _.Using(resource: 'T :> IDisposable | null, [<InlineIfLambda>] body) : Async2Code<'R, 'U> =
+    member inline _.Using(resource: 'T :> IDisposable | null, [<InlineIfLambda>] body) : Async2Code<_, 'U> =
         fun ctx ->
             try
                 check ctx.CancellationToken
@@ -365,105 +350,69 @@ type Async2Builder() =
             finally
                 if not (isNull (box resource)) then resource.Dispose()
 
-    member inline _.While(guard: unit -> bool, [<InlineIfLambda>] body) : Async2Code<'R, unit> =
+    member inline _.While(guard: unit -> bool, [<InlineIfLambda>] body) : Async2Code<_, unit> =
         fun ctx ->
             while guard () do
                 check ctx.CancellationToken
                 body ctx
             check ctx.CancellationToken
 
-    member inline _.For(sequence: seq<'T>, [<InlineIfLambda>] body) : Async2Code<'R, unit> =
+    member inline _.For(sequence: seq<'T>, [<InlineIfLambda>] body) : Async2Code<_, unit> =
         fun ctx ->
             for item in sequence do
                 check ctx.CancellationToken
                 body item ctx
             check ctx.CancellationToken
 
-    member inline _.Bind([<InlineIfLambda>] awaited: Started<'T>,[<InlineIfLambda>] continuation) : Async2Code<'R, 'U> =
+    member inline _.Source(computation: Async2<'T>) = computation
+
+    member inline _.Bind(computation: Async2<'T>, [<InlineIfLambda>] continuation) : Async2Code<'R, 'U> =
         fun ctx ->
             check ctx.CancellationToken
-            continuation (awaited.Invoke()) ctx
+            let result =
+                computation.StartTrampolined ctx.CancellationToken
+                |> ExceptionCache.Await
+            continuation result ctx
 
-    member inline this.Bind([<InlineIfLambda>] cancellable: Cold<'R, 'T>,[<InlineIfLambda>] continuation) : Async2Code<'R, 'U> =
+    member inline _.Bind([<InlineIfLambda>] source: Source<'T>, [<InlineIfLambda>] continuation) : Async2Code<_, 'U> =
         fun ctx ->
             check ctx.CancellationToken
-            continuation (cancellable.Invoke ctx) ctx
+            continuation (source.Invoke ctx.CancellationToken) ctx
 
-    member inline _.ReturnFrom([<InlineIfLambda>] awaited: Started<'T>) : Async2Code<'R, 'T> =
-        fun _ -> awaited.Invoke()
+    member inline _.ReturnFrom([<InlineIfLambda>] source: Source<'T>) : Async2Code<_, 'T> =
+        fun ctx -> source.Invoke ctx.CancellationToken
 
-    member inline _.ReturnFromFinal([<InlineIfLambda>] awaited: Started<'T>) : Async2Code<'R, 'T> =
-        fun _ -> awaited.Invoke()
+    member inline _.ReturnFrom(computation: Async2<'T>) : Async2Code<_, 'T> =
+        fun ctx -> computation.StartTrampolined ctx.CancellationToken |> ExceptionCache.Await
 
-    member inline _.ReturnFrom([<InlineIfLambda>] cancellable: Cold<'R, 'T>) : Async2Code<'R, 'T> =
-        fun ctx -> cancellable.Invoke ctx
-
-    member inline _.ReturnFromFinal([<InlineIfLambda>] cancellable: Cold<'R, 'T>) : Async2Code<'R, 'T> =
-        fun ctx -> cancellable.Invoke ctx
-
-    member inline this.Bind(computation: Async2<'T>, [<InlineIfLambda>] continuation) : Async2Code<'R, 'U> =
-        this.Bind(coldOf computation, continuation)
-
-    member inline this.ReturnFrom(computation: Async2<'T>) : Async2Code<'R, 'T> =
-        this.ReturnFrom(coldOf computation)
-
-    // Nothing follows a final `return!`, so the frame can finish before the callee starts:
-    // the callee is handed to the loop that owns the chain instead of being awaited. Without an owner
-    // (this frame was not started by a loop) this frame becomes the loop.
-    member inline _.ReturnFromFinal(computation: Async2<'R>) : Async2Code<'R, 'R> =
+    member inline _.ReturnFromFinal(computation: Async2<'T>) : Async2Code<_, 'T> =
         fun ctx ->
             match ctx.Tail with
-            | None ->
-                Async2TailCall.Loop(computation, ctx.CancellationToken) |> AsyncHelpers.Await
-            | Some tail ->
+            | ValueNone ->
+                let tail = TailBox()
+                let ctx = { ctx with Tail = ValueSome tail }
+                let mutable result = computation.StartTail ctx |> ExceptionCache.Await
+
+                while tail.HasNext do
+                    let next = tail.Take()
+                    result <- next ctx |> ExceptionCache.Await
+
+                result
+            | ValueSome tail ->
                 computation.HandOff tail
-                Unchecked.defaultof<'R>
+                Unchecked.defaultof<_>
 
-    member inline _.MergeSources([<InlineIfLambda>] left: Started<'A>, [<InlineIfLambda>] right: Started<'B>) =
-        let left = left.Invoke()
-        let right = right.Invoke()
-        Started(fun () -> struct (left, right))
+    member inline _.ReturnFromFinal([<InlineIfLambda>] source: Source<'T>) : Async2Code<_, 'T> =
+        fun ctx -> source.Invoke ctx.CancellationToken
 
-    member inline this.MergeSources([<InlineIfLambda>] left: Cold<'R, 'A>, [<InlineIfLambda>] right: Cold<'R, 'B>) =
-        Cold(fun ctx ->
-            let right = __runtimeAsyncReturnValueTask (right.Invoke ctx)
-            let left = left.Invoke ctx
+    member inline _.MergeSources([<InlineIfLambda>] left: Source<'A>, [<InlineIfLambda>] right: Source<'B>) =
+        merge left right
 
-            struct (left,
-                    right
-                    |> AsyncHelpers.Await)
-        )
+    member inline _.MergeSources(left: Async2<'A>, [<InlineIfLambda>] right: Source<'B>) =
+        merge (ofAsync2 left) right
 
-    member inline this.MergeSources ([<InlineIfLambda>] left: Started<'A>, [<InlineIfLambda>] right: Cold<'R, 'B>) =
-        Cold(fun ctx ->
-            let right = right.Invoke ctx
-            let left = left.Invoke()
-            struct (left, right)
-        )
-
-    member inline this.MergeSources ([<InlineIfLambda>] left: Cold<'R, 'A>, [<InlineIfLambda>] right: Started<'B>) =
-        Cold(fun ctx ->
-            let left = left.Invoke ctx
-            let right = right.Invoke()
-            struct (left, right)
-        )
-
-    member inline this.MergeSources(left: Async2<'A>, right: Async2<'B>) =
-        this.MergeSources(coldOf left, coldOf right)
-
-    member inline this.MergeSources(left: Async2<'A>, [<InlineIfLambda>] right: Started<'B>) =
-        this.MergeSources(coldOf left, right)
-
-    member inline this.MergeSources(left: Async2<'A>, [<InlineIfLambda>] right: Cold<'R, 'B>) =
-        this.MergeSources(coldOf left, right)
-
-    member inline this.MergeSources([<InlineIfLambda>] left: Started<'A>, right: Async2<'B>) =
-        this.MergeSources(left, coldOf right)
-
-    member inline this.MergeSources([<InlineIfLambda>] left: Cold<'R, 'A>, right: Async2<'B>) =
-        this.MergeSources(left, coldOf right)
-
-    member inline _.Source(computation: Async2<'T>) = computation
+    member inline _.MergeSources([<InlineIfLambda>] left: Source<'A>, right: Async2<'B>) =
+        merge left (ofAsync2 right)
 
     member inline _.Run([<InlineIfLambda>] code: Async2Code<'T, 'T>) : Async2<'T> =
         Async2(fun ctx -> __runtimeAsyncReturnValueTask(code ctx))
@@ -471,7 +420,7 @@ type Async2Builder() =
 [<AutoOpen>]
 module Async2BuilderAsyncDisposableExtensions =
     type Async2Builder with
-        member inline _.Using(resource: 'T :> IAsyncDisposable | null, [<InlineIfLambda>] body) : Async2Code<'R, 'U> =
+        member inline _.Using(resource: 'T :> IAsyncDisposable | null, [<InlineIfLambda>] body) : Async2Code<_, 'U> =
             fun ctx ->
                 try
                     check ctx.CancellationToken
@@ -480,7 +429,7 @@ module Async2BuilderAsyncDisposableExtensions =
                     if not (isNull (box resource)) then
                         resource.DisposeAsync() |> AsyncHelpers.Await
 
-        member inline this.For(sequence: IAsyncEnumerable<'T>, [<InlineIfLambda>] body) : Async2Code<'R, unit> =
+        member inline this.For(sequence: IAsyncEnumerable<'T>, [<InlineIfLambda>] body) : Async2Code<_, unit> =
             fun ctx ->
                 this.Using
                     (sequence.GetAsyncEnumerator ctx.CancellationToken,
@@ -495,13 +444,13 @@ module Async2BuilderAsyncDisposableExtensions =
 [<AutoOpen>]
 module Async2BuilderAwaitableExtensions =
     type Async2Builder with
-        member inline _.Source(awaitable) = startedOfAwaitable awaitable
+        member inline _.Source(awaitable) = ofAwaitable awaitable
 
-        member inline this.Source([<InlineIfLambda>] coldAwaitable) =
-            startedOfAwaitable (coldAwaitable ())
+        member inline _.Source([<InlineIfLambda>] coldAwaitable) =
+            ofAwaitable (coldAwaitable ())
 
-        member inline this.Source([<InlineIfLambda>] cancellableAwaitable) =
-            coldOfCancellableAwaitable cancellableAwaitable
+        member inline _.Source([<InlineIfLambda>] cancellableAwaitable) =
+            ofCancellableAwaitable cancellableAwaitable
 
 [<AutoOpen>]
 module Async2BuilderSourceExtensions =
@@ -512,14 +461,14 @@ module Async2BuilderSourceExtensions =
         member inline _.Source(sequence: IAsyncEnumerable<'T>) = sequence
 
         // Cannonical runtime async Bind sources
-        member inline _.Source(task: Task<'T>) = Started(fun () -> task |> AsyncHelpers.Await)
-        member inline _.Source(task: Task) = Started(fun () -> task |> AsyncHelpers.Await)
-        member inline _.Source(task: ValueTask<'T>) = Started(fun () -> task |> AsyncHelpers.Await)
-        member inline _.Source(task: ValueTask) = Started(fun () -> task |> AsyncHelpers.Await)
+        member inline _.Source(task: Task<'T>) = Source(fun _ -> task |> AsyncHelpers.Await)
+        member inline _.Source(task: Task) = Source(fun _ -> task |> AsyncHelpers.Await)
+        member inline _.Source(task: ValueTask<'T>) = Source(fun _ -> task |> AsyncHelpers.Await)
+        member inline _.Source(task: ValueTask) = Source(fun _ -> task |> AsyncHelpers.Await)
 
          //Cold start sources
-        member inline this.Source(computation: Async<'T>) =
-            Cold(fun ctx -> Async.StartImmediateAsTask(computation, ctx.CancellationToken) |> AsyncHelpers.Await)
+        member inline _.Source(computation: Async<'T>) =
+            Source(fun ct -> Async.StartImmediateAsTask(computation, ct) |> AsyncHelpers.Await)
 
 [<AutoOpen>]
 module Async2BuilderImpl =

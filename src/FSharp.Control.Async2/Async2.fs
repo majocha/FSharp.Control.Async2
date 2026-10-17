@@ -63,7 +63,7 @@ module internal Async2RuntimeHelpers =
     let startImmediate cancellationToken (computation: Async2<_>) =
         (computation.StartInIsolatedTrampoline cancellationToken).AsTask()
 
-    let cancellationTokenAsync = Async2(fun ctx -> ValueTask<CancellationToken>(ctx.CancellationToken))
+    let cancellationTokenAsync = Async2(fun ctx -> ValueTask<_>(ctx.CancellationToken))
 
 open Async2RuntimeHelpers
 open System.Runtime.ExceptionServices
