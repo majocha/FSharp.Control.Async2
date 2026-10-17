@@ -52,7 +52,7 @@ type Async2Context<'R> = {
         Tail: TailBox<'R> voption
     }
 
-and Async2Invocation<'R> = Async2Context<'R> -> ValueTask<'R>
+and Async2Invocation<'R> = Async2Context<'R> -> Task<'R>
 
 /// Carries the next computation of a tail-call chain from a finished frame back to the loop that owns the chain.
 and [<Sealed; NoEquality; NoComparison>] TailBox<'R>() =
@@ -91,7 +91,7 @@ module ExceptionCache =
         edi.Throw()
         Unchecked.defaultof<_>
 
-    let inline Await (task: ValueTask<'T>) =
+    let inline Await (task: Task<'T>) =
         try
             task |> AsyncHelpers.Await
         with exn ->
@@ -123,7 +123,7 @@ module Async2BuilderSources =
 
     let inline merge (left: Source<'A>) (right: Source<'B>) =
         Source(fun ct ->
-            let right = __runtimeAsyncReturnValueTask (right.Invoke ct)
+            let right = __runtimeAsyncReturn (right.Invoke ct)
             let left = left.Invoke ct
             struct (left, right |> AsyncHelpers.Await))
 
@@ -173,7 +173,7 @@ module internal Async2StartTrampoline =
                 current.IsRunning <- false
 
     type private QueuedStart<'T>(start: Async2Invocation<'T>, ct) =
-        let source = ManualResetValueTaskSourceCore<'T>()
+        let source = TaskCompletionSource<'T>()
 
         // The queue is drained after the parent has returned or suspended, so the child must
         // run in the execution context the parent had when it asked for the start.
@@ -194,16 +194,16 @@ module internal Async2StartTrampoline =
             let complete () =
                 try 
                     let result = awaiter.GetResult()
-                    source.SetResult(result)
+                    source.TrySetResult(result) |> ignore
                 with error -> 
-                    source.SetException(error)            
+                    source.TrySetException(error) |> ignore
 
             if awaiter.IsCompleted then
                 complete ()
             else
                 awaiter.UnsafeOnCompleted(fun () -> enqueueCompletion complete)
 
-        let startProtected _ = try start () with error -> source.SetException(error)
+        let startProtected _ = try start () with error -> source.TrySetException(error) |> ignore
 
         member this.Run() =
             if isNull capturedContext then
@@ -211,13 +211,7 @@ module internal Async2StartTrampoline =
             else
                 ExecutionContext.Run(capturedContext, startProtected, null)
 
-        member this.ValueTask = ValueTask<'T>(this, source.Version)
-
-        interface IValueTaskSource<'T> with
-            member _.GetResult token = source.GetResult token
-            member _.GetStatus token = source.GetStatus token
-            member _.OnCompleted(continuation, state, token, flags) =
-                source.OnCompleted(continuation, state, token, flags)
+        member _.Task = source.Task
 
     let start (start: Async2Invocation<'T>) (ct: CancellationToken) =
         let ctx = Async2Context.create ct
@@ -235,14 +229,14 @@ module internal Async2StartTrampoline =
                     try
                         start ctx
                     with error ->
-                        ValueTask.FromException<'T>(error)
+                        Task.FromException<'T>(error)
                 finally
                     current.Depth <- current.Depth - 1
             else
                 let completion = QueuedStart<'T>(start, ctx)
 
                 current.Queue.Enqueue(completion.Run)
-                completion.ValueTask
+                completion.Task
         else
             current.IsRunning <- true
 
@@ -266,7 +260,7 @@ module internal Async2StartTrampoline =
 [<Struct; NoEquality; NoComparison; CompiledName("FSharpAsync2`1")>]
 type Async2<'T> (start: Async2Invocation<'T>) =
 
-    member _.StartAsTask ct = Async2Context.create ct |> start |> _.AsTask()
+    member _.StartAsTask ct = Async2Context.create ct |> start
 
     // Starts directly: the tail box must reach the callee's own frame, so this bypasses the trampoline queue.
     [<System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)>]
@@ -379,7 +373,7 @@ type Async2Builder() =
         merge left right
 
     member inline _.Run([<InlineIfLambda>] code: Async2Code<'T, 'T>) : Async2<'T> =
-        Async2(fun ctx -> __runtimeAsyncReturnValueTask(code ctx))
+        Async2(fun ctx -> __runtimeAsyncReturn(code ctx))
 
     member inline _.Source(computation: Async2<'T>) = computation
 

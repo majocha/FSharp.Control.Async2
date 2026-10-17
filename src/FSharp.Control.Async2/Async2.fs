@@ -10,36 +10,22 @@ open System.Net
 open System.Runtime.CompilerServices
 open System.Threading
 open System.Threading.Tasks
-open System.Threading.Tasks.Sources
 
 open Microsoft.FSharp.Core
 open Microsoft.FSharp.Core.CompilerServices
 open Microsoft.FSharp.Core.CompilerServices.StateMachineHelpers
 
 module internal Async2RuntimeHelpers =
-    type ValueTaskCompletionSource<'T>(cancellationToken: CancellationToken) =
-        let mutable completed = false
-        let source = ManualResetValueTaskSourceCore<'T>(RunContinuationsAsynchronously = true)
+    type TaskCompletionSourceWithCancellation<'T>(cancellationToken: CancellationToken) =
+        let completion = TaskCompletionSource<'T>(TaskCreationOptions.RunContinuationsAsynchronously)
         let cancellationRegistration =
             cancellationToken.Register(
                 fun () ->
-                    if not (Interlocked.CompareExchange(&completed, true, false)) then
-                        source.SetException(TaskCanceledException("The task was canceled.", null, cancellationToken))
+                    completion.TrySetCanceled(cancellationToken) |> ignore
             )
 
-        interface IValueTaskSource<'T> with
-            member _.GetResult token = source.GetResult token
-            member _.GetStatus token = source.GetStatus token
-            member _.OnCompleted(continuation, state, token, flags) = source.OnCompleted(continuation, state, token, flags)
-
-        member _.TrySetResult(value: 'T) = 
-            if not (Interlocked.CompareExchange(&completed, true, false)) then
-                source.SetResult value
-        member _.TrySetException(exn) = 
-            if not (Interlocked.CompareExchange(&completed, true, false)) then
-                source.SetException exn
-
-        member this.ValueTask = ValueTask<'T>(this, source.Version)
+        member _.TrySetResult(value: 'T) = completion.TrySetResult(value)
+        member _.Task = completion.Task
 
         member _.Dispose() = cancellationRegistration.Dispose()
 
@@ -61,9 +47,9 @@ module internal Async2RuntimeHelpers =
         Task.Run<'T>(fun () -> computation.StartAsTask cancellationToken)
 
     let startImmediate cancellationToken (computation: Async2<_>) =
-        (computation.StartInIsolatedTrampoline cancellationToken).AsTask()
+        computation.StartInIsolatedTrampoline cancellationToken
 
-    let cancellationTokenAsync = Async2(fun ctx -> ValueTask<_>(ctx.CancellationToken))
+    let cancellationTokenAsync = Async2(fun ctx -> Task.FromResult(ctx.CancellationToken))
 
 open Async2RuntimeHelpers
 open System.Runtime.ExceptionServices
@@ -92,7 +78,7 @@ type Async2 =
                 && Thread.CurrentThread.IsThreadPoolThread
                 && Async2Builder.isAlreadyBackground ()
             then
-                (computation.StartInIsolatedTrampoline ct).AsTask()
+                computation.StartInIsolatedTrampoline ct
             else
                 computation |> startOnThreadPool ct
 
@@ -123,10 +109,7 @@ type Async2 =
         (computation: Async2<'T>, ?cancellationToken: CancellationToken)
         =
         let pending = computation.StartInIsolatedTrampoline(getToken cancellationToken)
-        if pending.IsCompleted then
-            pending.GetAwaiter().GetResult()
-        else
-            pending.AsTask().GetAwaiter().GetResult()
+        pending.GetAwaiter().GetResult()
 
     static member Start(computation: Async2<unit>, ?cancellationToken: CancellationToken) =
         let ct = getToken cancellationToken
@@ -314,7 +297,7 @@ type Async2 =
                     null
                 )
 
-            completion.Task |> ValueTask.ofTask)
+            completion.Task)
 
     static member FromContinuations
         (callback: ('T -> unit) * (exn -> unit) * (OperationCanceledException -> unit) -> unit)
@@ -357,19 +340,19 @@ type Async2 =
         }
 
     static member AwaitTask(task: Task<'T>) : Async2<'T> =
-        Async2(fun _ -> ValueTask<'T>(task))
+        Async2(fun _ -> task)
 
     static member AwaitTask(task: Task) : Async2<unit> =
         async2 { return! task }
 
     static member Await(task: Task<'T>) : Async2<'T> =
-        Async2(fun _ -> ValueTask<'T>(task))
+        Async2(fun _ -> task)
 
     static member Await(task: Task) : Async2<unit> =
         async2 { return! task }
 
     static member Await(task: ValueTask<'T>) : Async2<'T> =
-        Async2(fun _ -> task)
+        async2 { return! task }
 
     static member Await(task: ValueTask) : Async2<unit> =
         async2 { return! task }
@@ -402,15 +385,15 @@ type Async2 =
         async2 {
             let! ct = Async2.CancellationToken
 
-            let tcs = ValueTaskCompletionSource<bool>(ct)
+            let tcs = TaskCompletionSourceWithCancellation<bool>(ct)
 
             let callback =
-                WaitOrTimerCallback(fun _ timedOut -> tcs.TrySetResult(not timedOut))
+                WaitOrTimerCallback(fun _ timedOut -> tcs.TrySetResult(not timedOut) |> ignore)
 
             let handle =
                 ThreadPool.RegisterWaitForSingleObject(waitHandle, callback, null, defaultArg millisecondsTimeout Timeout.Infinite, true)
             try
-                return! tcs.ValueTask
+                return! tcs.Task
             finally
                 handle.Unregister null |> ignore
                 tcs.Dispose()
@@ -463,7 +446,7 @@ type Async2 =
             ?cancellationToken: CancellationToken
         ) =
         let cancellationToken = getToken cancellationToken
-        let task = (computation.StartInIsolatedTrampoline cancellationToken).AsTask()
+        let task = computation.StartInIsolatedTrampoline cancellationToken
 
         let invoke () =
             let result =

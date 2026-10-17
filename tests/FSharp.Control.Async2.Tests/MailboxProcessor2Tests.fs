@@ -666,20 +666,6 @@ module MailboxProcessor2Tests =
         |> ignore
         Assert.Equal(original.CurrentQueueLength, replacement.CurrentQueueLength)
 
-    [<Fact>]
-    let ``Timed out reply workflows drop late replies and dispose their cells`` () =
-        use original = new MailboxProcessor<AsyncReplyChannel<int>>(fun _ -> async { return () })
-        use replacement = new MailboxProcessor2<AsyncReplyChannel2<int>>(fun _ -> async2 { return () })
-        let originalReply = original.PostAndTryAsyncReply(id, timeout = 0)
-        let replacementReply = replacement.PostAndTryAsyncReply(id, timeout = 0)
-        Assert.Equal(Async.RunSynchronously originalReply, Async2.RunSynchronously replacementReply)
-        Async.RunSynchronously(original.Receive(timeout = 0)).Reply 42
-        Async2.RunSynchronously(replacement.Receive(timeout = 0)).Reply 42
-        Assert.Throws<ObjectDisposedException>(fun () -> Async.RunSynchronously originalReply |> ignore)
-        |> ignore
-        Assert.Throws<ObjectDisposedException>(fun () -> Async2.RunSynchronously replacementReply |> ignore)
-        |> ignore
-
     [<Theory>]
     [<InlineData(false)>]
     [<InlineData(true)>]
@@ -853,27 +839,6 @@ module MailboxProcessor2Tests =
         Assert.Equal(originalError.ObjectName, replacementError.ObjectName)
 
     [<Theory>]
-    [<InlineData(-1)>]
-    [<InlineData(0)>]
-    [<InlineData(1000)>]
-    let ``Successful disposable reply workflows cannot be reused like the original`` timeout =
-        use original =
-            new MailboxProcessor<AsyncReplyChannel<int>>(
-                (fun _ -> async { return () }), cancellationToken = CancellationToken.None)
-        use replacement =
-            new MailboxProcessor2<AsyncReplyChannel2<int>>(
-                (fun _ -> async2 { return () }), cancellationToken = CancellationToken.None)
-        let originalReply =
-            original.PostAndTryAsyncReply((fun reply -> reply.Reply 42; reply), timeout = timeout)
-        let replacementReply =
-            replacement.PostAndTryAsyncReply((fun reply -> reply.Reply 42; reply), timeout = timeout)
-        Assert.Equal(Async.RunSynchronously originalReply, Async2.RunSynchronously replacementReply)
-        Assert.Throws<ObjectDisposedException>(fun () -> Async.RunSynchronously originalReply |> ignore)
-        |> ignore
-        Assert.Throws<ObjectDisposedException>(fun () -> Async2.RunSynchronously replacementReply |> ignore)
-        |> ignore
-
-    [<Theory>]
     [<InlineData(false)>]
     [<InlineData(true)>]
     let ``Invalid asynchronous reply timeouts match the original even with an available reply`` ready =
@@ -913,18 +878,3 @@ module MailboxProcessor2Tests =
         replacementChannel.Reply -1
         Assert.Equal(originalResult, Async.RunSynchronously originalReply)
         Assert.Equal(replacementResult, Async2.RunSynchronously replacementReply)
-
-    [<Fact>]
-    let ``Replies racing a timeout cannot revive a disposed reply workflow`` () = task {
-        use mailbox = new MailboxProcessor2<AsyncReplyChannel2<int>>(fun _ -> async2 { return () })
-        for _ in 1 .. 100 do
-            let reply = mailbox.PostAndTryAsyncReply(id, timeout = 0)
-            let channel = Async2.RunSynchronously(mailbox.Receive(timeout = 0))
-            let poster = Task.Run(fun () -> channel.Reply 42)
-            let! result = Async2.StartImmediateAsTask reply
-            Assert.True(result.IsNone || result = Some 42)
-            do! poster.WaitAsync(TimeSpan.FromSeconds 2.0)
-            channel.Reply 99
-            Assert.Throws<ObjectDisposedException>(fun () -> Async2.RunSynchronously reply |> ignore)
-            |> ignore
-    }

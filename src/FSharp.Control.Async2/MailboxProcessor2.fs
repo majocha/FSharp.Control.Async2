@@ -5,6 +5,8 @@ open System.Collections.Generic
 open System.Threading
 open System.Threading.Tasks
 open System.Threading.Tasks.Sources
+open Microsoft.FSharp.Core.CompilerServices
+open System.Runtime.CompilerServices
 
 /// A reply channel for MailboxProcessor2.PostAndAsyncReply.
 [<Sealed; CompiledName("FSharpAsyncReplyChannel2`1")>]
@@ -13,27 +15,11 @@ type AsyncReplyChannel2<'Reply>(reply: 'Reply -> unit) =
 
 [<Sealed>]
 type private MailboxProcessor2Reply<'Reply>() =
-    let source = ManualResetValueTaskSourceCore<'Reply>(RunContinuationsAsynchronously = true)
-    // 0 = open, 1 = reply claimed, 2 = disposed.
-    let mutable state = 0
+    let tcs = new TaskCompletionSource<'Reply>(TaskCreationOptions.RunContinuationsAsynchronously)
 
-    member this.ValueTask =
-        if Volatile.Read(&state) = 2 then
-            raise (ObjectDisposedException("ResultCell"))
-        ValueTask<'Reply>(this, source.Version)
+    member this.Task = tcs.Task
 
-    member _.Reply(value: 'Reply) =
-        if Interlocked.CompareExchange(&state, 1, 0) = 0 then
-            source.SetResult value
-
-    interface IDisposable with
-        member _.Dispose() =
-            Interlocked.Exchange(&state, 2) |> ignore
-
-    interface IValueTaskSource<'Reply> with
-        member this.GetResult(token) = source.GetResult token
-        member this.GetStatus(token) = source.GetStatus token
-        member this.OnCompleted(continuation, state, token, flags) = source.OnCompleted(continuation, state, token, flags)
+    member _.Reply(value: 'Reply) = tcs.TrySetResult value |> ignore
 
 [<Sealed>]
 type private MailboxProcessor2Queue<'Msg>(cancellationSupported: bool, isThrowExceptionAfterDisposed: bool) =
@@ -286,15 +272,14 @@ type MailboxProcessor2<'Msg>
 
         if timeout = Timeout.Infinite && not cancellationSupported then
             async2 {
-                let! reply = result.ValueTask
+                let! reply = result.Task
                 return Some reply
             }
         else
             async2 {
-                use _disposeResult = result
                 let! ct = Async2.CancellationToken
                 try
-                    let task = result.ValueTask.AsTask()
+                    let task = result.Task
                     let! reply = task.WaitAsync(TimeSpan.FromMilliseconds(float timeout), ct)
                     return Some reply
                 with :? TimeoutException ->
@@ -308,7 +293,7 @@ type MailboxProcessor2<'Msg>
         if timeout = Timeout.Infinite && not cancellationSupported then
             let result = new MailboxProcessor2Reply<'Reply>()
             this.Post(buildMessage (AsyncReplyChannel2(result.Reply)))
-            Async2.Await result.ValueTask
+            Async2.Await result.Task
         else
             let reply = this.PostAndTryAsyncReply(buildMessage, timeout = timeout)
             async2 {
@@ -321,9 +306,9 @@ type MailboxProcessor2<'Msg>
         (buildMessage: AsyncReplyChannel2<'Reply> -> 'Msg, ?timeout: int)
         : 'Reply option =
         let timeout = defaultArg timeout defaultTimeout
-        use result = new MailboxProcessor2Reply<'Reply>()
+        let result = new MailboxProcessor2Reply<'Reply>()
         this.Post(buildMessage (AsyncReplyChannel2(result.Reply)))
-        let task = result.ValueTask.AsTask()
+        let task = result.Task
         if task.IsCompleted || task.Wait(timeout) then
             Some(task.GetAwaiter().GetResult())
         else

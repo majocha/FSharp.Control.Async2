@@ -53,9 +53,9 @@ module AsyncCompilerRegressionTests =
             | _ -> source.SetException(OperationCanceledException(cancellation.Token))
 
         if completed then finish ()
-        let child = Async2<int>(fun _ -> source.ValueTask) |> wrapToQueueDepth 130
+        let child = Async2<int>(fun _ -> source.ValueTask.AsTask()) |> wrapToQueueDepth 130
         let parent = async2 { return! child }
-        let running = (parent.StartTrampolined CancellationToken.None).AsTask()
+        let running = parent.StartTrampolined CancellationToken.None
 
         if not completed then
             Assert.False(running.IsCompleted)
@@ -85,7 +85,7 @@ module AsyncCompilerRegressionTests =
         if completed then source.SetResult 42
 
         Async2.StartWithContinuations(
-            (Async2<int>(fun _ -> source.ValueTask) |> wrapToQueueDepth 130),
+            (Async2<int>(fun _ -> source.ValueTask.AsTask()) |> wrapToQueueDepth 130),
             (fun value -> observed.SetResult(struct (value, local.Value))),
             observed.SetException,
             (fun error -> observed.SetException error))
@@ -105,16 +105,16 @@ module AsyncCompilerRegressionTests =
         let failure = InvalidOperationException("factory failed")
         let child = Async2<int>(fun _ -> raise failure) |> wrapToQueueDepth 130
         let parent = async2 { return! child }
-        let running = (parent.StartTrampolined CancellationToken.None).AsTask()
+        let running = parent.StartTrampolined CancellationToken.None
         let actual = Assert.Throws<InvalidOperationException>(fun () -> running.GetAwaiter().GetResult() |> ignore)
         Assert.Same(failure, actual)
 
     [<Fact>]
-    let ``Inline starts return synchronous factory failures as ValueTask failures`` () =
+    let ``Inline starts return synchronous factory failures as Task failures`` () =
         let failure = InvalidOperationException("factory failed")
         let child = Async2<int>(fun _ -> raise failure)
         let parent = async2 { return! child }
-        let running = (parent.StartTrampolined CancellationToken.None).AsTask()
+        let running = parent.StartTrampolined CancellationToken.None
         let actual = Assert.Throws<InvalidOperationException>(fun () -> running.GetAwaiter().GetResult() |> ignore)
         Assert.Same(failure, actual)
 
@@ -130,9 +130,9 @@ module AsyncCompilerRegressionTests =
                     if failStatus then raise failure
                     ValueTaskSourceStatus.Pending
                 member _.OnCompleted(_, _, _, _) = raise failure }
-        let child = Async2<int>(fun _ -> ValueTask<int>(source, 0s)) |> wrapToQueueDepth 130
+        let child = Async2<int>(fun _ -> ValueTask<int>(source, 0s).AsTask()) |> wrapToQueueDepth 130
         let parent = async2 { return! child }
-        let running = (parent.StartTrampolined CancellationToken.None).AsTask()
+        let running = parent.StartTrampolined CancellationToken.None
         let actual = Assert.Throws<InvalidOperationException>(fun () -> running.GetAwaiter().GetResult() |> ignore)
         Assert.Same(failure, actual)
 
@@ -153,7 +153,7 @@ module AsyncCompilerRegressionTests =
             Assert.Equal("parent", local.Value)
             return result
         }
-        Assert.Equal(42, (parent.StartTrampolined CancellationToken.None).AsTask().GetAwaiter().GetResult())
+        Assert.Equal(42, (parent.StartTrampolined CancellationToken.None).GetAwaiter().GetResult())
 
     [<Fact>]
     let ``Synchronous recursion and completion remain stack safe`` () =
@@ -285,8 +285,8 @@ module AsyncCompilerRegressionTests =
             Thread(ThreadStart(fun () ->
                 let parent =
                     Async2<int>(fun ctx ->
-                        firstChildTask <- ((async2 { return 42 }).StartTrampolined ctx.CancellationToken).AsTask()
-                        secondChildTask <- ((async2 { return 43 }).StartTrampolined ctx.CancellationToken).AsTask()
+                        firstChildTask <- (async2 { return 42 }).StartTrampolined ctx.CancellationToken
+                        secondChildTask <- (async2 { return 43 }).StartTrampolined ctx.CancellationToken
                         raise (InvalidOperationException("parent start failed")))
 
                 try
@@ -498,7 +498,7 @@ module AsyncCompatibilityTests =
 
     [<Fact>]
     let ``Tail call through a custom Async2 value works`` () =
-        let custom = Async2<int>(fun _ -> ValueTask<int>(7))
+        let custom = Async2<int>(fun _ -> Task.FromResult(7))
         let middle = async2 { return! custom }
         let root = async2 { return! middle }
         Assert.Equal(7, Async2.RunSynchronously root)
