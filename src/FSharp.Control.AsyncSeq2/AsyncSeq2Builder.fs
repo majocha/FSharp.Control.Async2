@@ -55,6 +55,26 @@ type internal AsyncSeq2State =
     /// Completed, faulted or disposed; every enumerator has been closed.
     | Done = 2
 
+type internal Progress =
+    | Running = 0
+    | Produced = 1
+    | Completed = 2
+
+[<Struct; NoEquality; NoComparison>]
+type internal Outcome<'T> =
+    | Yielded
+    | Continue
+    | Ended of error: exn * tail: IAsyncEnumerable<'T> voption
+
+[<Struct; NoEquality; NoComparison>]
+type internal Closed =
+    /// The frame now runs its tail source.
+    | HandedOff
+    /// The frame is gone; its outcome is stored on it for the parent below.
+    | Reported
+    /// The root frame is gone; the enumeration ends with this fault (or none).
+    | Finished of error: exn
+
 /// An asynchronous sequence, compatible with IAsyncEnumerable<'T>.
 /// Nested `AsyncSeq2` sources are driven iteratively by the outermost enumerator, so deep or
 /// recursive `yield!` does not grow the call stack.
@@ -100,74 +120,98 @@ and [<Sealed>] internal AsyncSeq2Enumerator<'T>(root: IAsyncEnumerator<AsyncSeq2
         with e ->
             frame.Error <- e
 
-    member private this.MoveNextCore() : ValueTask<bool> =
+    /// Pops `frame` and disposes its enumerator, returning the dispose fault if any, else `error`.
+    member private _.DisposeFrame(frame: AsyncSeq2Frame<'T>, error: exn) : ValueTask<exn> =
         __runtimeAsyncReturnValueTask (
-            let mutable produced = false
-            let mutable completed = false
+            let mutable error = error
 
             try
-                while not (produced || completed) do
-                    let frame = top
-                    let mutable ended = false
-                    let mutable handoff = false
-                    let mutable error: exn = null
-                    let mutable tail: IAsyncEnumerable<'T> = null
+                AsyncHelpers.Await(frame.Enumerator.DisposeAsync())
+            with e ->
+                error <- e
 
-                    try
-                        if AsyncHelpers.Await(frame.Enumerator.MoveNextAsync()) then
-                            match frame.Enumerator.Current with
-                            | Value value ->
-                                current <- value
-                                produced <- true
-                            | Source child -> this.Push child
-                            | TailSource next ->
-                                ended <- true
-                                handoff <- true
-                                tail <- next
-                        else
-                            ended <- true
-                    with e ->
-                        error <- e
-                        ended <- true
-
-                    if ended then
-                        top <- frame.Next
-
-                        try
-                            AsyncHelpers.Await(frame.Enumerator.DisposeAsync())
-                        with e ->
-                            error <- e
-
-                        frame.Enumerator <- null
-
-                        // A tail `yield!` hands the frame to its child once the parent is closed.
-                        if handoff && isNull error then
-                            try
-                                frame.Enumerator <- this.Open tail
-                                top <- frame
-                            with e ->
-                                error <- e
-
-                        // Not handed off: report the outcome to the frame below, or finish at the root.
-                        if isNull frame.Enumerator then
-                            frame.Next <- null
-                            completed <- isNull top
-
-                            if not completed then
-                                frame.Error <- error
-                            else
-                                current <- Unchecked.defaultof<'T>
-
-                                if not (isNull error) then
-                                    ExceptionDispatchInfo.Throw error
-
-                produced
-            finally
-                // Published to the next caller by completion of the returned task.
-                state <- if completed then AsyncSeq2State.Done else AsyncSeq2State.Idle
+            frame.Enumerator <- null
+            error
         )
 
-    member private _.DisposeCore() : ValueTask =
+    /// Closes the ended top `frame`. A tail `yield!` hands the frame to its child once the parent is
+    /// closed. Otherwise the outcome goes to the frame below (ValueNone), or, when the root has
+    /// ended, is returned as its final result (ValueSome).
+    member private this.Close(frame: AsyncSeq2Frame<'T>, error: exn, tail: IAsyncEnumerable<'T> voption) : ValueTask<Closed> =
+        __runtimeAsyncReturnValueTask (
+            top <- frame.Next
+            let mutable error = AsyncHelpers.Await(this.DisposeFrame(frame, error))
+
+            let handedOff =
+                match tail with
+                | ValueSome next when isNull error ->
+                    try
+                        frame.Enumerator <- this.Open next
+                        top <- frame
+                        true
+                    with e ->
+                        error <- e
+                        false
+                | _ -> false
+
+            if handedOff then
+                HandedOff
+            else
+                frame.Next <- null
+
+                if isNull top then
+                    Finished error
+                else
+                    frame.Error <- error
+                    Reported
+        )
+
+    member private this.MoveNextCore() : ValueTask<bool> =
+        __runtimeAsyncReturnValueTask (
+            let mutable progress = Progress.Running
+
+            try
+                while progress = Progress.Running do
+                    let frame = top
+
+                    // What the top frame's enumerator did: a step, or its end (with fault and/or tail hand-off).
+                    let outcome =
+                        try
+                            if AsyncHelpers.Await(frame.Enumerator.MoveNextAsync()) then
+                                match frame.Enumerator.Current with
+                                | Value value ->
+                                    current <- value
+                                    Yielded
+                                | Source child ->
+                                    this.Push child
+                                    Continue
+                                | TailSource next -> Ended(null, ValueSome next)
+                            else
+                                Ended(null, ValueNone)
+                        with e ->
+                            Ended(e, ValueNone)
+
+                    match outcome with
+                    | Yielded -> progress <- Progress.Produced
+                    | Continue -> ()
+                    | Ended(error, tail) ->
+                        match AsyncHelpers.Await(this.Close(frame, error, tail)) with
+                        | HandedOff
+                        | Reported -> ()
+                        | Finished error ->
+                            progress <- Progress.Completed
+                            current <- Unchecked.defaultof<'T>
+
+                            if not (isNull error) then
+                                ExceptionDispatchInfo.Throw error
+
+                progress = Progress.Produced
+            finally
+                // Published to the next caller by completion of the returned task.
+                state <- if progress = Progress.Completed then AsyncSeq2State.Done else AsyncSeq2State.Idle
+        )
+
+    member private this.DisposeCore() : ValueTask =
         __runtimeAsyncReturnValueTaskUnit (
             let mutable error: exn = null
 
@@ -175,13 +219,7 @@ and [<Sealed>] internal AsyncSeq2Enumerator<'T>(root: IAsyncEnumerator<AsyncSeq2
                 let frame = top
                 top <- frame.Next
                 frame.Next <- null
-
-                try
-                    AsyncHelpers.Await(frame.Enumerator.DisposeAsync())
-                with e ->
-                    error <- e
-
-                frame.Enumerator <- null
+                error <- AsyncHelpers.Await(this.DisposeFrame(frame, error))
 
             if not (isNull error) then
                 ExceptionDispatchInfo.Throw error
@@ -232,17 +270,15 @@ type AsyncSeq2Builder() =
             | :? IDisposable as disposable -> disposable.Dispose()
             | _ -> ())
 
-    member inline this.For(source: IAsyncEnumerable<'U>, [<InlineIfLambda>] body: 'U -> seq<'T>) =
+    member inline _.For(source: IAsyncEnumerable<'U>, [<InlineIfLambda>] body: 'U -> seq<'T>) =
         Seq.delay (fun () ->
             let enumerator =
                 source.GetAsyncEnumerator(StateMachineHelpers.__runtimeAsyncSequenceCancellationToken ())
 
             RuntimeHelpers.EnumerateThenFinally
-                (Seq.delay (fun () ->
-                    this.While(
-                        (fun () -> AsyncHelpers.Await(enumerator.MoveNextAsync())),
-                        (fun () -> body enumerator.Current)
-                    )))
+                (RuntimeHelpers.EnumerateWhile
+                    (fun () -> AsyncHelpers.Await(enumerator.MoveNextAsync()))
+                    (Seq.delay (fun () -> body enumerator.Current)))
                 (fun () -> AsyncHelpers.Await(enumerator.DisposeAsync())))
 
     member inline this.YieldFrom(source: seq<'T>) =
