@@ -54,11 +54,26 @@ module ExceptionCache =
         store.GetValue(error, capture).Throw()
         Unchecked.defaultof<_>
 
+    /// Awaits `task` and rethrows its failure through the cache. The wait itself never throws: awaiting a
+    /// faulted task directly would throw once in the awaiter, again where the suspended frame resumes, and
+    /// a third time here, so a failure crossing one frame would cost three throws instead of one.
+    /// `UnsafeAwaitAwaiter` only waits for completion and never calls `GetResult`; unlike awaiting a
+    /// `ConfigureAwait(SuppressThrowing)` awaitable, it allocates nothing beyond what `Await` does.
     let inline await (task: Task<'T>) =
-        try
-            AsyncHelpers.Await task
-        with error ->
-            throwCached error
+        if not task.IsCompleted then
+            AsyncHelpers.UnsafeAwaitAwaiter(task.GetAwaiter())
+
+        if task.IsCompletedSuccessfully then
+            task.Result
+        else
+            match task.Exception with
+            | null ->
+                // Cancelled: only the awaiter can produce the OperationCanceledException the task holds.
+                try
+                    task.GetAwaiter().GetResult()
+                with error ->
+                    throwCached error
+            | failure -> throwCached failure.InnerExceptions[0]
 
 /// The state threaded through builder code: the cancellation token and, when the computation was
 /// started by a tail-call loop, the box a final `return!` hands its callee to. `'R` is the result type
