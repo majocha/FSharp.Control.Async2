@@ -7,6 +7,7 @@ namespace Microsoft.FSharp.Control
 open System
 open System.IO
 open System.Net
+open System.Reflection
 open System.Threading
 open System.Threading.Tasks
 
@@ -48,6 +49,110 @@ module internal Async2RuntimeHelpers =
         computation.StartInIsolatedTrampoline cancellationToken
 
     let cancellationTokenAsync = Async2(fun ctx -> Task.FromResult(ctx.CancellationToken))
+
+    /// Starts `computation` with `start`. When creation options are given, the returned task is created with
+    /// them and completes once the computation has finished.
+    let startAsTask start cancellationToken (computation: Async2<'T>) taskCreationOptions : Task<'T> =
+        match taskCreationOptions with
+        | None
+        | Some TaskCreationOptions.None -> start cancellationToken computation
+        | Some (options: TaskCreationOptions) ->
+            let completion = TaskCompletionSource<'T>(options)
+            let running: Task<'T> = start cancellationToken computation
+            running.ContinueWith(
+                Action<Task<'T>>(fun running -> completion.TrySetFromTask running |> ignore),
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default
+            )
+            |> ignore
+            completion.Task
+
+    /// The result of a callback-driven operation, settled exactly once by whichever comes first:
+    /// the operation itself, after a successful `TryClaim`, or cancellation.
+    [<Sealed>]
+    type OnceCompletion<'T>() =
+        let completion = TaskCompletionSource<'T>(TaskCreationOptions.RunContinuationsAsynchronously)
+        let mutable claimed = 0
+        let mutable registration = new CancellationTokenRegistration()
+
+        member _.Task = completion.Task
+
+        member _.IsClaimed = Volatile.Read(&claimed) = 1
+
+        /// True only for the first caller, which then stops listening to cancellation.
+        member _.TryClaim() =
+            if Interlocked.Exchange(&claimed, 1) = 0 then
+                registration.Dispose()
+                true
+            else
+                false
+
+        /// On cancellation before the operation claims the result, runs `onCancel` and completes as canceled.
+        member this.RegisterCancellation(cancellationToken: CancellationToken, onCancel: unit -> unit) =
+            registration <-
+                cancellationToken.Register(fun () ->
+                    if this.TryClaim() then
+                        onCancel ()
+                        completion.TrySetCanceled cancellationToken |> ignore)
+
+        member _.Complete(getResult: unit -> 'T) =
+            try
+                completion.TrySetResult(getResult ()) |> ignore
+            with error ->
+                completion.TrySetException error |> ignore
+
+    /// Exceptions from a cooperative cancellation routine are ignored, as in FSharp.Core.
+    let runCancelAction cancelAction =
+        match cancelAction with
+        | Some cancel ->
+            try
+                cancel ()
+            with _ ->
+                ()
+        | None -> ()
+
+    /// Creates a delegate of an arbitrary `'Delegate: delegate<'T, unit>` type that calls `f`.
+    [<Sealed>]
+    type FuncDelegate<'T>(f: 'T -> unit) =
+        member _.Invoke(sender: obj, args: 'T) : unit =
+            ignore sender
+            f args
+
+        static member Create<'Delegate when 'Delegate :> Delegate>(f) =
+            let invoke =
+                typeof<FuncDelegate<'T>>.GetMethod("Invoke", BindingFlags.Public ||| BindingFlags.NonPublic ||| BindingFlags.Instance)
+
+            Delegate.CreateDelegate(typeof<'Delegate>, FuncDelegate<'T>(f), invoke) :?> 'Delegate
+
+    /// Awaits a child started by `StartChild`. Like FSharp.Core, the timeout runs from the start of the await,
+    /// and on expiry the child is canceled and allowed to finish before `TimeoutException` is raised.
+    let awaitChildWithTimeout (childCancellation: CancellationTokenSource) (running: Task<'T>) millisecondsTimeout =
+        match millisecondsTimeout with
+        | 0 ->
+            async2 {
+                if running.IsCompleted then
+                    return! running
+                else
+                    return raise (TimeoutException())
+            }
+        | timeout ->
+            async2 {
+                if not running.IsCompleted then
+                    let! ct = CurrentCancellationToken
+                    do!
+                        (running :> Task)
+                            .WaitAsync(TimeSpan.FromMilliseconds(float timeout), ct)
+                            .ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing)
+
+                    if not running.IsCompleted then
+                        ct.ThrowIfCancellationRequested()
+                        childCancellation.Cancel()
+                        do! (running :> Task).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing)
+                        raise (TimeoutException())
+
+                return! running
+            }
 
 open Async2RuntimeHelpers
 open System.Runtime.ExceptionServices
@@ -121,14 +226,13 @@ type Async2 =
             ?cancellationToken: CancellationToken
         )
         =
-        ignore taskCreationOptions
         let ct = getToken cancellationToken
-        computation |> startOnThreadPool ct
+        startAsTask startOnThreadPool ct computation taskCreationOptions
 
     static member StartChildAsTask(computation, ?taskCreationOptions) =
         async2 {
             let! ct = CurrentCancellationToken
-            return computation |> startImmediate ct
+            return startAsTask startImmediate ct computation taskCreationOptions
         }
 
     static member Catch(computation: Async2<'T>) : Async2<Choice<'T, exn>> =
@@ -164,10 +268,28 @@ type Async2 =
         : Async2<Async2<'T>> =
             async2 {
                 let! ct = CurrentCancellationToken
-                let started = computation |> startOnThreadPool ct
-                return async2 {
-                    return! started
-                }
+
+                match millisecondsTimeout with
+                | None
+                | Some Timeout.Infinite ->
+                    let started = computation |> startOnThreadPool ct
+                    return async2 {
+                        return! started
+                    }
+                | Some timeout ->
+                    // A timeout cancels the child, possibly after it finished, so its source is
+                    // never disposed; only the link to the parent token is dropped once it finishes.
+                    let childCancellation = new CancellationTokenSource()
+                    let link = ct.Register(fun () -> childCancellation.Cancel())
+                    let started = computation |> startOnThreadPool childCancellation.Token
+                    started.ContinueWith(
+                        Action<Task<'T>>(fun _ -> link.Dispose()),
+                        CancellationToken.None,
+                        TaskContinuationOptions.ExecuteSynchronously,
+                        TaskScheduler.Default
+                    )
+                    |> ignore
+                    return awaitChildWithTimeout childCancellation started timeout
             }
 
     static member Parallel
@@ -406,7 +528,91 @@ type Async2 =
             endAction: IAsyncResult -> 'T,
             ?cancelAction: unit -> unit
         )
-        : Async2<'T> = failwith "not implemented"
+        : Async2<'T> =
+        async2 {
+            let! ct = CurrentCancellationToken
+            let completion = OnceCompletion<'T>()
+            completion.RegisterCancellation(ct, fun () -> runCancelAction cancelAction)
+
+            let callback =
+                AsyncCallback(fun iar ->
+                    if not iar.CompletedSynchronously && completion.TryClaim() then
+                        completion.Complete(fun () -> endAction iar))
+
+            let iar = beginAction (callback, null)
+
+            if iar.CompletedSynchronously then
+                completion.TryClaim() |> ignore
+                return endAction iar
+            else
+                return! completion.Task
+        }
+
+    static member FromBeginEnd
+        (
+            arg: 'Arg1,
+            beginAction: 'Arg1 * AsyncCallback * obj -> IAsyncResult,
+            endAction: IAsyncResult -> 'T,
+            ?cancelAction: unit -> unit
+        )
+        : Async2<'T> =
+        Async2.FromBeginEnd((fun (callback, state) -> beginAction (arg, callback, state)), endAction, ?cancelAction = cancelAction)
+
+    static member FromBeginEnd
+        (
+            arg1: 'Arg1,
+            arg2: 'Arg2,
+            beginAction: 'Arg1 * 'Arg2 * AsyncCallback * obj -> IAsyncResult,
+            endAction: IAsyncResult -> 'T,
+            ?cancelAction: unit -> unit
+        )
+        : Async2<'T> =
+        Async2.FromBeginEnd(
+            (fun (callback, state) -> beginAction (arg1, arg2, callback, state)),
+            endAction,
+            ?cancelAction = cancelAction
+        )
+
+    static member FromBeginEnd
+        (
+            arg1: 'Arg1,
+            arg2: 'Arg2,
+            arg3: 'Arg3,
+            beginAction: 'Arg1 * 'Arg2 * 'Arg3 * AsyncCallback * obj -> IAsyncResult,
+            endAction: IAsyncResult -> 'T,
+            ?cancelAction: unit -> unit
+        )
+        : Async2<'T> =
+        Async2.FromBeginEnd(
+            (fun (callback, state) -> beginAction (arg1, arg2, arg3, callback, state)),
+            endAction,
+            ?cancelAction = cancelAction
+        )
+
+    static member AwaitEvent(event: IEvent<'Delegate, 'T>, ?cancelAction: unit -> unit) : Async2<'T> =
+        async2 {
+            let! ct = CurrentCancellationToken
+            let completion = OnceCompletion<'T>()
+            let handler = ref Unchecked.defaultof<'Delegate>
+
+            handler.Value <-
+                FuncDelegate<'T>.Create<'Delegate>(fun args ->
+                    if completion.TryClaim() then
+                        event.RemoveHandler handler.Value
+                        completion.Complete(fun () -> args))
+
+            completion.RegisterCancellation(ct, fun () ->
+                event.RemoveHandler handler.Value
+                runCancelAction cancelAction)
+
+            event.AddHandler handler.Value
+
+            // Cancellation may have run before the handler was added.
+            if completion.IsClaimed then
+                event.RemoveHandler handler.Value
+
+            return! completion.Task
+        }
 
     static member AsBeginEnd(computation: 'Arg -> Async2<'T>) =
         let beginAction (arg: 'Arg, callback: AsyncCallback, state: obj) =

@@ -23,8 +23,6 @@ Experimental: it needs a preview F# compiler with runtime-async support (see
   `Async2.StartTaskImmediate` for tasks and awaitables, and the module
   functions `Async2.map`, `bind`, `catch`, `catchWith`, `parallelLimit` and
   friends.
-- Not done yet: `FromBeginEnd` and `AwaitEvent`. `StartChild` ignores its
-  timeout, and `StartAsTask` / `StartChildAsTask` ignore `TaskCreationOptions`.
 
 `MailboxProcessor2<'Msg>` is FSharp.Core's `MailboxProcessor` with an `async2`
 body and `AsyncReplyChannel2<'Reply>` replies.
