@@ -17,8 +17,8 @@ Experimental: it needs a preview F# compiler with runtime-async support (see
 - `let! ct = CurrentCancellationToken` reads the token without starting a
   computation. `Async2.CancellationToken` also works but costs a small start.
 - A tail-position `return!` hands over to its callee and the caller's frame
-  finishes. The callee does not see `AsyncLocal` values the caller set, and the
-  caller does not appear in stack traces.
+  finishes, so the caller does not appear in stack traces. The callee still
+  starts in the caller's `ExecutionContext` and sees its `AsyncLocal` values.
 - Extra operations: `Async2.RunSynchronouslyImmediate`, `Async2.Await` and
   `Async2.StartTaskImmediate` for tasks and awaitables, and the module
   functions `Async2.map`, `bind`, `catch`, `catchWith`, `parallelLimit` and
