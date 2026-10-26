@@ -20,10 +20,6 @@ type internal AsyncEnumStatus =
 
 [<Struct>]
 type internal TakeOrSkipKind =
-    /// use the Seq.take semantics, raises exception if not enough elements
-    | Take
-    /// use the Seq.skip semantics, raises exception if not enough elements
-    | Skip
     /// use the Seq.truncate semantics, safe operation, returns all if count exceeds the seq
     | Truncate
     /// no Seq equiv, but like Stream.drop in Scala: safe operation, return empty if not enough elements
@@ -84,13 +80,16 @@ module internal AsyncSeq2Internal =
 
     let inline raiseEmptySeq () = invalidArg "source" "The input task sequence was empty."
 
+    /// Element accessors and reductions over an empty sequence raise InvalidOperationException, as in AsyncSeq.
+    let inline raiseEmpty () = raise (InvalidOperationException "The input sequence was empty.")
+
     /// Moves the enumerator to its first element, assuming it has just been allocated.
-    /// Raises "The input sequence was empty" if there was no first element.
+    /// Raises InvalidOperationException if there was no first element.
     let inline moveFirstOrRaiseUnsafe (e: IAsyncEnumerator<_>) = FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
         let hasFirst = AsyncHelpers.Await (e.MoveNextAsync())
 
         if not hasFirst then
-            invalidArg "source" "The input task sequence was empty."
+            raiseEmpty ()
     )
 
     /// Tests the given integer value and raises if it is -1 or lower.
@@ -324,6 +323,23 @@ module internal AsyncSeq2Internal =
                 AsyncHelpers.Await (e.DisposeAsync())
         )
 
+    let exactlyOne (source: AsyncSeq2<_>) =
+        checkNonNull (nameof source) source
+
+        FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+            let e = source.GetAsyncEnumerator CancellationToken.None
+            try
+                AsyncHelpers.Await (moveFirstOrRaiseUnsafe e)
+                let current = e.Current
+
+                if AsyncHelpers.Await (e.MoveNextAsync()) then
+                    raise (InvalidOperationException "The input sequence contains more than one element.")
+
+                current
+            finally
+                AsyncHelpers.Await (e.DisposeAsync())
+        )
+
 
     let init count initializer = asyncSeq2 {
         let mutable i = 0
@@ -494,7 +510,7 @@ module internal AsyncSeq2Internal =
                 let hasFirst = AsyncHelpers.Await (e.MoveNextAsync())
 
                 if not hasFirst then
-                    raiseEmptySeq ()
+                    raiseEmpty ()
 
                 let mutable result = e.Current
 
@@ -1109,24 +1125,6 @@ module internal AsyncSeq2Internal =
         raiseCannotBeNegative (nameof count) count
 
         match skipOrTake with
-        | Skip ->
-            // don't create a new sequence if count = 0
-            if count = 0 then
-                source
-            else
-                asyncSeq2 {
-                    use e = source.GetAsyncEnumerator(FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncSequenceCancellationToken())
-
-                    for _ in 1..count do
-                        let! hasMore = e.MoveNextAsync()
-
-                        if not hasMore then
-                            raiseInsufficient ()
-
-                    while! e.MoveNextAsync() do
-                        yield e.Current
-
-                }
         | Drop ->
             // don't create a new sequence if count = 0
             if count = 0 then
@@ -1149,23 +1147,6 @@ module internal AsyncSeq2Internal =
                             yield e.Current
 
                 }
-        | Take ->
-            // don't initialize an empty task sequence
-            if count = 0 then
-                empty
-            else
-                asyncSeq2 {
-                    use e = source.GetAsyncEnumerator(FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncSequenceCancellationToken())
-
-                    for _ in count .. -1 .. 1 do
-                        let! step = e.MoveNextAsync()
-
-                        if not step then
-                            raiseInsufficient ()
-
-                        yield e.Current
-                }
-
         | Truncate ->
             // don't create a new sequence if count = 0
             if count = 0 then
@@ -1313,6 +1294,7 @@ module internal AsyncSeq2Internal =
     let removeManyAt index count (source: AsyncSeq2<'T>) =
         checkNonNull (nameof source) source
         raiseCannotBeNegative (nameof index) index
+        raiseCannotBeNegative (nameof count) count
 
         asyncSeq2 {
             let mutable i = 0
@@ -1324,8 +1306,8 @@ module internal AsyncSeq2Internal =
 
                 i <- i + 1
 
-            // cannot remove past end of sequence
-            if i <= index then
+            // As in AsyncSeq: every element in the range must exist; removing nothing never fails.
+            if count > 0 && i < indexEnd then
                 raiseOutOfBounds (nameof index)
         }
 

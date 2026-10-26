@@ -22,17 +22,12 @@ module EmptySeq =
         Gen.getEmptyVariant variant |> AsyncSeq2.skip 0 |> verifyEmpty
 
     [<Theory; ClassData(typeof<TestEmptyVariants>)>]
-    let ``AsyncSeq2-skip(1) on empty input should throw InvalidOperation`` variant =
-        fun () ->
-            Gen.getEmptyVariant variant
-            |> AsyncSeq2.skip 1
-            |> consumeTaskSeq
-
-        |> should throwAsyncExact typeof<ArgumentException>
+    let ``AsyncSeq2-skip(1) on empty input returns empty, as in AsyncSeq`` variant =
+        Gen.getEmptyVariant variant |> AsyncSeq2.skip 1 |> verifyEmpty
 
     [<Fact>]
     let ``AsyncSeq2-skip(-1) should throw ArgumentException on any input`` () =
-        fun () -> (AsyncSeq2.empty<int> ()) |> AsyncSeq2.skip -1 |> consumeTaskSeq
+        fun () -> (AsyncSeq2.empty<int>) |> AsyncSeq2.skip -1 |> consumeTaskSeq
         |> should throwAsyncExact typeof<ArgumentException>
 
         fun () -> AsyncSeq2.init 10 id |> AsyncSeq2.skip -1 |> consumeTaskSeq
@@ -64,7 +59,7 @@ module EmptySeq =
 
     [<Fact>]
     let ``AsyncSeq2-drop(-1) should throw ArgumentException on any input`` () =
-        fun () -> (AsyncSeq2.empty<int> ()) |> AsyncSeq2.drop -1 |> consumeTaskSeq
+        fun () -> (AsyncSeq2.empty<int>) |> AsyncSeq2.drop -1 |> consumeTaskSeq
         |> should throwAsyncExact typeof<ArgumentException>
 
         fun () -> AsyncSeq2.init 10 id |> AsyncSeq2.drop -1 |> consumeTaskSeq
@@ -111,24 +106,11 @@ module Immutable =
     }
 
     [<Theory; ClassData(typeof<TestImmTaskSeq>)>]
-    let ``AsyncSeq2-skip throws when there are not enough elements`` variant =
-        fun () -> AsyncSeq2.init 1 id |> AsyncSeq2.skip 2 |> consumeTaskSeq
-
-        |> should throwAsyncExact typeof<ArgumentException>
-
-        fun () ->
-            Gen.getSeqImmutable variant
-            |> AsyncSeq2.skip 11
-            |> consumeTaskSeq
-
-        |> should throwAsyncExact typeof<ArgumentException>
-
-        fun () ->
-            Gen.getSeqImmutable variant
-            |> AsyncSeq2.skip 10_000_000
-            |> consumeTaskSeq
-
-        |> should throwAsyncExact typeof<ArgumentException>
+    let ``AsyncSeq2-skip stops at the end when there are not enough elements, as in AsyncSeq`` variant = task {
+        do! AsyncSeq2.init 1 id |> AsyncSeq2.skip 2 |> verifyEmpty
+        do! Gen.getSeqImmutable variant |> AsyncSeq2.skip 11 |> verifyEmpty
+        do! Gen.getSeqImmutable variant |> AsyncSeq2.skip 10_000_000 |> verifyEmpty
+    }
 
     [<Theory; ClassData(typeof<TestImmTaskSeq>)>]
     let ``AsyncSeq2-drop skips over at least 'count' items`` variant = task {

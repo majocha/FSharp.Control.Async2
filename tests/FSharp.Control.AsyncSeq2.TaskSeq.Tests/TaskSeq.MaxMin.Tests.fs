@@ -112,12 +112,12 @@ module EmptySeq =
         assertNullArg <| fun () -> minMax (null: AsyncSeq2<int>)
 
     [<Theory; ClassData(typeof<TestEmptyVariants>)>]
-    let ``Empty sequence raises ArgumentException`` variant =
+    let ``Empty sequence raises InvalidOperationException`` variant =
         let test minMax =
             let data = Gen.getEmptyVariant variant
 
             fun () -> minMax data |> Task.ignore
-            |> should throwAsyncExact typeof<ArgumentException>
+            |> should throwAsyncExact typeof<InvalidOperationException>
 
         for minMax in MinMax.getAll () do
             test minMax

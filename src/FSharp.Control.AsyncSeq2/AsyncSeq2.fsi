@@ -6,9 +6,6 @@ type AsyncSeq2<'T> = System.Collections.Generic.IAsyncEnumerable<'T>
 /// use the cancellation token supplied when the computation is started.
 [<Sealed; AbstractClass>]
 type AsyncSeq2 =
-    /// An empty asynchronous sequence.
-    static member empty<'T> : unit -> AsyncSeq2<'T>
-
     /// A sequence containing one element.
     static member singleton: value: 'T -> AsyncSeq2<'T>
 
@@ -47,3 +44,11 @@ type AsyncSeq2 =
 
     /// Count the elements in the sequence.
     static member length: source: AsyncSeq2<'T> -> Async2<int>
+
+/// Values that a static class cannot hold, reachable as `AsyncSeq2.name` alongside its members.
+[<AutoOpen>]
+module AsyncSeq2Values =
+    [<RequireQualifiedAccess>]
+    module AsyncSeq2 =
+        /// An empty asynchronous sequence (a value, as in AsyncSeq and TaskSeq).
+        val empty<'T> : AsyncSeq2<'T>

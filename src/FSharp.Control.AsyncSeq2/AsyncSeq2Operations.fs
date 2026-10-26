@@ -443,7 +443,7 @@ module AsyncSeq2OperationExtensions =
             Internal.checkNonNull (nameof source) source
             async2 {
                 let! value = AsyncSeq2.tryHead source
-                return value |> Option.defaultWith Internal.raiseEmptySeq
+                return value |> Option.defaultWith Internal.raiseEmpty
             }
 
         static member tryLast(source: AsyncSeq2<'T>) : Async2<'T option> =
@@ -459,7 +459,7 @@ module AsyncSeq2OperationExtensions =
             Internal.checkNonNull (nameof source) source
             async2 {
                 let! value = AsyncSeq2.tryLast source
-                return value |> Option.defaultWith Internal.raiseEmptySeq
+                return value |> Option.defaultWith Internal.raiseEmpty
             }
 
         static member firstOrDefault defaultValue source =
@@ -472,9 +472,10 @@ module AsyncSeq2OperationExtensions =
 
         static member tryTail source = AsyncSeq2Cold.terminal source Internal.tryTail
 
+        /// The sequence after its first element; empty when the source is empty, as in AsyncSeq.
         static member tail source =
             AsyncSeq2Cold.terminal source (fun values ->
-                Internal.tryTail values |> Task.map (Option.defaultWith Internal.raiseEmptySeq))
+                Internal.tryTail values |> Task.map (Option.defaultWith (fun () -> Internal.empty)))
 
         static member tryItem index source = AsyncSeq2Cold.terminal source (Internal.tryItem index)
 
@@ -487,10 +488,7 @@ module AsyncSeq2OperationExtensions =
 
         static member tryExactlyOne source = AsyncSeq2Cold.terminal source Internal.tryExactlyOne
 
-        static member exactlyOne source =
-            AsyncSeq2Cold.terminal source (fun values ->
-                Internal.tryExactlyOne values
-                |> Task.map (Option.defaultWith (fun () -> invalidArg (nameof source) "The input sequence contains more than one element.")))
+        static member exactlyOne source = AsyncSeq2Cold.terminal source Internal.exactlyOne
 
         static member indexed(source: AsyncSeq2<'T>) =
             Internal.checkNonNull (nameof source) source
@@ -532,9 +530,10 @@ module AsyncSeq2OperationExtensions =
         static member where predicate source = Internal.filter (Predicate predicate) source
         static member whereAsync predicate source = AsyncSeq2.filterAsync predicate source
 
-        static member skip count source = Internal.skipOrTake Skip count source
+        // As in AsyncSeq, take and skip stop quietly at the end of a shorter source (aliases of truncate and drop).
+        static member skip count source = Internal.skipOrTake Drop count source
         static member drop count source = Internal.skipOrTake Drop count source
-        static member take count source = Internal.skipOrTake Take count source
+        static member take count source = Internal.skipOrTake Truncate count source
         static member truncate count source = Internal.skipOrTake Truncate count source
 
         static member takeWhile predicate source = Internal.takeWhile false (Predicate predicate) source
@@ -804,7 +803,7 @@ module AsyncSeq2OperationExtensions =
                 let! ct = CurrentCancellationToken
                 use e = source.GetAsyncEnumerator ct
                 let! first = e.MoveNextAsync()
-                if not first then Internal.raiseEmptySeq ()
+                if not first then Internal.raiseEmpty ()
                 let mutable result = e.Current
                 let mutable running = true
                 while running do

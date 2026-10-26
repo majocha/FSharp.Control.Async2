@@ -155,17 +155,17 @@ module Immutable =
     [<Theory; ClassData(typeof<TestImmTaskSeq>)>]
     let ``AsyncSeq2-concat with three sequences of sequences and few empties`` variant =
         asyncSeq2 {
-            yield (AsyncSeq2.empty ())
+            yield (AsyncSeq2.empty)
             yield Gen.getSeqImmutable variant
-            yield (AsyncSeq2.empty ())
-            yield (AsyncSeq2.empty ())
+            yield (AsyncSeq2.empty)
+            yield (AsyncSeq2.empty)
             yield Gen.getSeqImmutable variant
-            yield (AsyncSeq2.empty ())
+            yield (AsyncSeq2.empty)
             yield Gen.getSeqImmutable variant
-            yield (AsyncSeq2.empty ())
-            yield (AsyncSeq2.empty ())
-            yield (AsyncSeq2.empty ())
-            yield (AsyncSeq2.empty ())
+            yield (AsyncSeq2.empty)
+            yield (AsyncSeq2.empty)
+            yield (AsyncSeq2.empty)
+            yield (AsyncSeq2.empty)
         }
         |> AsyncSeq2.concat
         |> validateSequence
@@ -175,7 +175,7 @@ module Immutable =
         fun () ->
             asyncSeq2 {
                 yield Gen.getSeqImmutable variant
-                yield (AsyncSeq2.empty ())
+                yield (AsyncSeq2.empty)
                 yield null
             }
             |> AsyncSeq2.concat
@@ -272,15 +272,15 @@ module SideEffects =
         asyncSeq2 {
             yield asyncSeq2 { do i <- i + 1 }
             yield Gen.getSeqImmutable variant // not yield-bang!
-            yield (AsyncSeq2.empty ())
+            yield (AsyncSeq2.empty)
             yield asyncSeq2 { do i <- i + 1 }
             yield Gen.getSeqImmutable variant
-            yield (AsyncSeq2.empty ())
+            yield (AsyncSeq2.empty)
             yield Gen.getSeqImmutable variant
-            yield (AsyncSeq2.empty ())
-            yield (AsyncSeq2.empty ())
-            yield (AsyncSeq2.empty ())
-            yield (AsyncSeq2.empty ())
+            yield (AsyncSeq2.empty)
+            yield (AsyncSeq2.empty)
+            yield (AsyncSeq2.empty)
+            yield (AsyncSeq2.empty)
             yield asyncSeq2 { do i <- i + 1 }
         }
         |> AsyncSeq2.concat

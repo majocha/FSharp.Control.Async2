@@ -115,7 +115,7 @@ let ``CE asyncSeq2 with nested deeply yield! perf test 8521 nested tasks`` () = 
                                 for _ in 0..2 do
                                     yield! createTasks 2
 
-                        yield! (AsyncSeq2.empty ())
+                        yield! (AsyncSeq2.empty)
     }
 
     let! data = tskSeq |> ColdTask.toListAsync

@@ -20,9 +20,10 @@ module EmptySeq =
         assertNullArg <| fun () -> ColdTask.tryTail null
 
     [<Theory; ClassData(typeof<TestEmptyVariants>)>]
-    let ``AsyncSeq2-tail throws`` variant = task {
-        fun () -> Gen.getEmptyVariant variant |> ColdTask.tail |> Task.ignore
-        |> should throwAsyncExact typeof<ArgumentException>
+    let ``AsyncSeq2-tail returns an empty sequence`` variant = task {
+        let! rest = Gen.getEmptyVariant variant |> ColdTask.tail
+        let! items = rest |> ColdTask.toArrayAsync
+        items |> should be Empty
     }
 
     [<Theory; ClassData(typeof<TestEmptyVariants>)>]
@@ -35,8 +36,9 @@ module EmptySeq =
     let ``AsyncSeq2-tail executes side effect`` () = task {
         let mutable x = 0
 
-        fun () -> asyncSeq2 { do x <- x + 1 } |> ColdTask.tail |> Task.ignore
-        |> should throwAsyncExact typeof<ArgumentException>
+        let! rest = asyncSeq2 { do x <- x + 1 } |> ColdTask.tail
+        let! items = rest |> ColdTask.toArrayAsync
+        items |> should be Empty
 
         // side effect must have run!
         x |> should equal 1

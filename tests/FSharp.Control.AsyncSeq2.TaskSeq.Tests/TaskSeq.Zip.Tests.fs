@@ -13,8 +13,8 @@ open Microsoft.FSharp.Control.AsyncSeq2Implementation
 module EmptySeq =
     [<Fact>]
     let ``Null source is invalid`` () =
-        assertNullArg <| fun () -> AsyncSeq2.zip null (AsyncSeq2.empty ())
-        assertNullArg <| fun () -> AsyncSeq2.zip (AsyncSeq2.empty ()) null
+        assertNullArg <| fun () -> AsyncSeq2.zip null (AsyncSeq2.empty)
+        assertNullArg <| fun () -> AsyncSeq2.zip (AsyncSeq2.empty) null
         assertNullArg <| fun () -> AsyncSeq2.zip null null
 
     [<Theory; ClassData(typeof<TestEmptyVariants>)>]
@@ -24,12 +24,12 @@ module EmptySeq =
 
     [<Theory; ClassData(typeof<TestEmptyVariants>)>]
     let ``AsyncSeq2-zip can zip empty sequences v2`` variant =
-        AsyncSeq2.zip (AsyncSeq2.empty<int> ()) (Gen.getEmptyVariant variant)
+        AsyncSeq2.zip (AsyncSeq2.empty<int>) (Gen.getEmptyVariant variant)
         |> verifyEmpty
 
     [<Theory; ClassData(typeof<TestEmptyVariants>)>]
     let ``AsyncSeq2-zip can zip empty sequences v3`` variant =
-        AsyncSeq2.zip (Gen.getEmptyVariant variant) (AsyncSeq2.empty<int> ())
+        AsyncSeq2.zip (Gen.getEmptyVariant variant) (AsyncSeq2.empty<int>)
         |> verifyEmpty
 
 
@@ -206,13 +206,13 @@ module EmptySeqZip3 =
     [<Fact>]
     let ``Null source is invalid for zip3`` () =
         assertNullArg
-        <| fun () -> AsyncSeq2.zip3 null (AsyncSeq2.empty ()) (AsyncSeq2.empty ())
+        <| fun () -> AsyncSeq2.zip3 null (AsyncSeq2.empty) (AsyncSeq2.empty)
 
         assertNullArg
-        <| fun () -> AsyncSeq2.zip3 (AsyncSeq2.empty ()) null (AsyncSeq2.empty ())
+        <| fun () -> AsyncSeq2.zip3 (AsyncSeq2.empty) null (AsyncSeq2.empty)
 
         assertNullArg
-        <| fun () -> AsyncSeq2.zip3 (AsyncSeq2.empty ()) (AsyncSeq2.empty ()) null
+        <| fun () -> AsyncSeq2.zip3 (AsyncSeq2.empty) (AsyncSeq2.empty) null
 
         assertNullArg <| fun () -> AsyncSeq2.zip3 null null null
 

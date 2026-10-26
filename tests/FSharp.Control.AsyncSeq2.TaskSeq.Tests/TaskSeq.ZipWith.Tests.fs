@@ -17,10 +17,10 @@ module EmptySeq =
     [<Fact>]
     let ``Null source is invalid for zipWith`` () =
         assertNullArg
-        <| fun () -> AsyncSeq2.zipWith (+) null (AsyncSeq2.empty ())
+        <| fun () -> AsyncSeq2.zipWith (+) null (AsyncSeq2.empty)
 
         assertNullArg
-        <| fun () -> AsyncSeq2.zipWith (+) (AsyncSeq2.empty ()) null
+        <| fun () -> AsyncSeq2.zipWith (+) (AsyncSeq2.empty) null
 
         assertNullArg
         <| fun () -> AsyncSeq2.zipWith (+) null (null: AsyncSeq2<int>)
@@ -28,34 +28,34 @@ module EmptySeq =
     [<Fact>]
     let ``Null source is invalid for zipWithAsync`` () =
         assertNullArg
-        <| fun () -> AsyncSeq2.zipWithAsync (fun a b -> async2 { return a + b }) null (AsyncSeq2.empty ())
+        <| fun () -> AsyncSeq2.zipWithAsync (fun a b -> async2 { return a + b }) null (AsyncSeq2.empty)
 
         assertNullArg
-        <| fun () -> AsyncSeq2.zipWithAsync (fun a b -> async2 { return a + b }) (AsyncSeq2.empty ()) null
+        <| fun () -> AsyncSeq2.zipWithAsync (fun a b -> async2 { return a + b }) (AsyncSeq2.empty) null
 
     [<Fact>]
     let ``Null source is invalid for zipWith3`` () =
         assertNullArg
-        <| fun () -> AsyncSeq2.zipWith3 (fun a b c -> a) null (AsyncSeq2.empty ()) (AsyncSeq2.empty ())
+        <| fun () -> AsyncSeq2.zipWith3 (fun a b c -> a) null (AsyncSeq2.empty) (AsyncSeq2.empty)
 
         assertNullArg
-        <| fun () -> AsyncSeq2.zipWith3 (fun a b c -> a) (AsyncSeq2.empty ()) null (AsyncSeq2.empty ())
+        <| fun () -> AsyncSeq2.zipWith3 (fun a b c -> a) (AsyncSeq2.empty) null (AsyncSeq2.empty)
 
         assertNullArg
-        <| fun () -> AsyncSeq2.zipWith3 (fun a b c -> a) (AsyncSeq2.empty ()) (AsyncSeq2.empty ()) null
+        <| fun () -> AsyncSeq2.zipWith3 (fun a b c -> a) (AsyncSeq2.empty) (AsyncSeq2.empty) null
 
     [<Fact>]
     let ``Null source is invalid for zipWithAsync3`` () =
         let f a b c = async2 { return a + b + c }
 
         assertNullArg
-        <| fun () -> AsyncSeq2.zipWithAsync3 f null (AsyncSeq2.empty ()) (AsyncSeq2.empty ())
+        <| fun () -> AsyncSeq2.zipWithAsync3 f null (AsyncSeq2.empty) (AsyncSeq2.empty)
 
         assertNullArg
-        <| fun () -> AsyncSeq2.zipWithAsync3 f (AsyncSeq2.empty ()) null (AsyncSeq2.empty ())
+        <| fun () -> AsyncSeq2.zipWithAsync3 f (AsyncSeq2.empty) null (AsyncSeq2.empty)
 
         assertNullArg
-        <| fun () -> AsyncSeq2.zipWithAsync3 f (AsyncSeq2.empty ()) (AsyncSeq2.empty ()) null
+        <| fun () -> AsyncSeq2.zipWithAsync3 f (AsyncSeq2.empty) (AsyncSeq2.empty) null
 
     [<Theory; ClassData(typeof<TestEmptyVariants>)>]
     let ``AsyncSeq2-zipWith with two empty gives empty`` variant =
@@ -64,7 +64,7 @@ module EmptySeq =
 
     [<Theory; ClassData(typeof<TestEmptyVariants>)>]
     let ``AsyncSeq2-zipWith with one empty gives empty`` variant =
-        AsyncSeq2.zipWith (+) (AsyncSeq2.empty<int> ()) (Gen.getEmptyVariant variant)
+        AsyncSeq2.zipWith (+) (AsyncSeq2.empty<int>) (Gen.getEmptyVariant variant)
         |> verifyEmpty
 
     [<Theory; ClassData(typeof<TestEmptyVariants>)>]

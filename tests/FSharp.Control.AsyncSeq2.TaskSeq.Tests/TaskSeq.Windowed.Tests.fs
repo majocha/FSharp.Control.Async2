@@ -16,12 +16,12 @@ module EmptySeq =
 
     [<Fact>]
     let ``AsyncSeq2-windowed with zero raises ArgumentException before awaiting`` () =
-        fun () -> (AsyncSeq2.empty<int> ()) |> AsyncSeq2.windowed 0 |> ignore // throws eagerly, before enumeration
+        fun () -> (AsyncSeq2.empty<int>) |> AsyncSeq2.windowed 0 |> ignore // throws eagerly, before enumeration
         |> should throw typeof<System.ArgumentException>
 
     [<Fact>]
     let ``AsyncSeq2-windowed with negative raises ArgumentException before awaiting`` () =
-        fun () -> (AsyncSeq2.empty<int> ()) |> AsyncSeq2.windowed -1 |> ignore
+        fun () -> (AsyncSeq2.empty<int>) |> AsyncSeq2.windowed -1 |> ignore
         |> should throw typeof<System.ArgumentException>
 
     [<Theory; ClassData(typeof<TestEmptyVariants>)>]

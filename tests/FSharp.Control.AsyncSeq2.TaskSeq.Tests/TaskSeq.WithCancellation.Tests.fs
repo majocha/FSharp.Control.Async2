@@ -121,7 +121,7 @@ module ``Sequence contents`` =
 
     [<Fact>]
     let ``AsyncSeq2-withCancellation: empty source produces empty sequence`` () =
-        (AsyncSeq2.empty<int> ())
+        (AsyncSeq2.empty<int>)
         |> AsyncSeq2.withCancellation CancellationToken.None
         |> verifyEmpty
 

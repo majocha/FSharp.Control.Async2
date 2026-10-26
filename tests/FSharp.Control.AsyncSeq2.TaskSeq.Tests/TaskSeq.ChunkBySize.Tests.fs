@@ -16,12 +16,12 @@ module EmptySeq =
 
     [<Fact>]
     let ``AsyncSeq2-chunkBySize with zero raises ArgumentException before awaiting`` () =
-        fun () -> (AsyncSeq2.empty<int> ()) |> AsyncSeq2.chunkBySize 0 |> ignore // throws eagerly, before enumeration
+        fun () -> (AsyncSeq2.empty<int>) |> AsyncSeq2.chunkBySize 0 |> ignore // throws eagerly, before enumeration
         |> should throw typeof<System.ArgumentException>
 
     [<Fact>]
     let ``AsyncSeq2-chunkBySize with negative raises ArgumentException before awaiting`` () =
-        fun () -> (AsyncSeq2.empty<int> ()) |> AsyncSeq2.chunkBySize -1 |> ignore
+        fun () -> (AsyncSeq2.empty<int>) |> AsyncSeq2.chunkBySize -1 |> ignore
         |> should throw typeof<System.ArgumentException>
 
     [<Theory; ClassData(typeof<TestEmptyVariants>)>]

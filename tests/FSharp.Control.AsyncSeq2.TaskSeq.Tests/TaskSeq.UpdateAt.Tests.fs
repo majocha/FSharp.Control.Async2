@@ -31,7 +31,7 @@ module EmptySeq =
     [<Fact>]
     let ``AsyncSeq2-updateAt(-1) should throw ArgumentException on any input`` () =
         fun () ->
-            (AsyncSeq2.empty<int> ())
+            (AsyncSeq2.empty<int>)
             |> AsyncSeq2.updateAt -1 42
             |> consumeTaskSeq
 

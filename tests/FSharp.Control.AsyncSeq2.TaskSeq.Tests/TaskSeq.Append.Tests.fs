@@ -24,10 +24,10 @@ module EmptySeq =
     [<Fact>]
     let ``Null source is invalid`` () =
         assertNullArg
-        <| fun () -> (AsyncSeq2.empty ()) |> AsyncSeq2.append null
+        <| fun () -> (AsyncSeq2.empty) |> AsyncSeq2.append null
 
         assertNullArg
-        <| fun () -> null |> AsyncSeq2.append ((AsyncSeq2.empty ()))
+        <| fun () -> null |> AsyncSeq2.append ((AsyncSeq2.empty))
 
         assertNullArg <| fun () -> null |> AsyncSeq2.append null
 

@@ -20,30 +20,30 @@ module EmptySeq =
     [<Fact>]
     let ``Null source1 is invalid`` () =
         assertNullArg
-        <| fun () -> ColdTask.compareWith compare null (AsyncSeq2.empty<int> ())
+        <| fun () -> ColdTask.compareWith compare null (AsyncSeq2.empty<int>)
 
         assertNullArg
-        <| fun () -> ColdTask.compareWithAsync (fun a b -> Task.fromResult (compare a b)) null (AsyncSeq2.empty<int> ())
+        <| fun () -> ColdTask.compareWithAsync (fun a b -> Task.fromResult (compare a b)) null (AsyncSeq2.empty<int>)
 
     [<Fact>]
     let ``Null source2 is invalid`` () =
         assertNullArg
-        <| fun () -> ColdTask.compareWith compare (AsyncSeq2.empty<int> ()) null
+        <| fun () -> ColdTask.compareWith compare (AsyncSeq2.empty<int>) null
 
         assertNullArg
-        <| fun () -> ColdTask.compareWithAsync (fun a b -> Task.fromResult (compare a b)) (AsyncSeq2.empty<int> ()) null
+        <| fun () -> ColdTask.compareWithAsync (fun a b -> Task.fromResult (compare a b)) (AsyncSeq2.empty<int>) null
 
     [<Theory; ClassData(typeof<TestEmptyVariants>)>]
     let ``AsyncSeq2-compareWith of two empty sequences is 0`` variant = task {
         let empty = Gen.getEmptyVariant variant
-        let! result = ColdTask.compareWith compare empty (AsyncSeq2.empty<int> ())
+        let! result = ColdTask.compareWith compare empty (AsyncSeq2.empty<int>)
         result |> should equal 0
     }
 
     [<Theory; ClassData(typeof<TestEmptyVariants>)>]
     let ``AsyncSeq2-compareWithAsync of two empty sequences is 0`` variant = task {
         let empty = Gen.getEmptyVariant variant
-        let! result = ColdTask.compareWithAsync (fun a b -> Task.fromResult (compare a b)) empty (AsyncSeq2.empty<int> ())
+        let! result = ColdTask.compareWithAsync (fun a b -> Task.fromResult (compare a b)) empty (AsyncSeq2.empty<int>)
         result |> should equal 0
     }
 

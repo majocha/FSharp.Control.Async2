@@ -173,9 +173,15 @@ let result = AsyncSeq2.toArray values |> Async2.RunSynchronously
 `FSharp.Control.AsyncSeq2.Tests` contains xUnit v3/MTP builder, AsyncSeq
 operator, cleanup, composition, and cancellation tests. It also ports all 494
 active tests from FSharp.Control.AsyncSeq's `AsyncSeqTests.fs`, adapting
-`Async<'T>` to `Async2<'T>` and accounting for the existing TaskSeq-compatible
-API (including strict `take`/`skip`, `truncate`/`drop`, array-valued groups,
-and `removeManyAt` range behavior). `Async2.StartChild` starts its child as
+`Async<'T>` to `Async2<'T>` and accounting for the TaskSeq-shaped signatures
+(such as `int` indexes and array-valued groups). Where AsyncSeq and TaskSeq
+behave differently at runtime, AsyncSeq2 follows AsyncSeq: `take`/`skip` stop
+at the end of a shorter source (like `truncate`/`drop`), `tail` of an empty
+sequence is empty, element accessors and reductions over an empty sequence
+raise `InvalidOperationException`, `removeManyAt` raises when its range runs
+past the end, and `prefetch` buffers at most one element. `AsyncSeq2.empty` is a
+value, and `asyncSeq2` can bind F# `Async<'T>` computations with the
+enumeration token. `Async2.StartChild` starts its child as
 soon as the parent creates it, so bounded channel producers and consumers
 can run concurrently. Disposing an enumerator from `toBlockingSeq` cancels
 its enumeration token.

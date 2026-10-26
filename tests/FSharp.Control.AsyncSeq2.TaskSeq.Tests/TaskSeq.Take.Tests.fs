@@ -22,17 +22,12 @@ module EmptySeq =
         Gen.getEmptyVariant variant |> AsyncSeq2.take 0 |> verifyEmpty
 
     [<Theory; ClassData(typeof<TestEmptyVariants>)>]
-    let ``AsyncSeq2-take(1) on empty input should throw InvalidOperation`` variant =
-        fun () ->
-            Gen.getEmptyVariant variant
-            |> AsyncSeq2.take 1
-            |> consumeTaskSeq
-
-        |> should throwAsyncExact typeof<ArgumentException>
+    let ``AsyncSeq2-take(1) on empty input returns empty, as in AsyncSeq`` variant =
+        Gen.getEmptyVariant variant |> AsyncSeq2.take 1 |> verifyEmpty
 
     [<Fact>]
     let ``AsyncSeq2-take(-1) should throw ArgumentException on any input`` () =
-        fun () -> (AsyncSeq2.empty<int> ()) |> AsyncSeq2.take -1 |> consumeTaskSeq
+        fun () -> (AsyncSeq2.empty<int>) |> AsyncSeq2.take -1 |> consumeTaskSeq
         |> should throwAsyncExact typeof<ArgumentException>
 
         fun () -> AsyncSeq2.init 10 id |> AsyncSeq2.take -1 |> consumeTaskSeq
@@ -67,7 +62,7 @@ module EmptySeq =
 
     [<Fact>]
     let ``AsyncSeq2-truncate(-1) should throw ArgumentException on any input`` () =
-        fun () -> (AsyncSeq2.empty<int> ()) |> AsyncSeq2.truncate -1 |> consumeTaskSeq
+        fun () -> (AsyncSeq2.empty<int>) |> AsyncSeq2.truncate -1 |> consumeTaskSeq
         |> should throwAsyncExact typeof<ArgumentException>
 
         fun () -> AsyncSeq2.init 10 id |> AsyncSeq2.truncate -1 |> consumeTaskSeq
@@ -111,24 +106,12 @@ module Immutable =
     }
 
     [<Theory; ClassData(typeof<TestImmTaskSeq>)>]
-    let ``AsyncSeq2-take throws when there are not enough elements`` variant =
-        fun () -> AsyncSeq2.init 1 id |> AsyncSeq2.take 2 |> consumeTaskSeq
-
-        |> should throwAsyncExact typeof<ArgumentException>
-
-        fun () ->
-            Gen.getSeqImmutable variant
-            |> AsyncSeq2.take 11
-            |> consumeTaskSeq
-
-        |> should throwAsyncExact typeof<ArgumentException>
-
-        fun () ->
-            Gen.getSeqImmutable variant
-            |> AsyncSeq2.take 10_000_000
-            |> consumeTaskSeq
-
-        |> should throwAsyncExact typeof<ArgumentException>
+    let ``AsyncSeq2-take stops at the end when there are not enough elements, as in AsyncSeq`` variant = task {
+        let! single = AsyncSeq2.init 1 id |> AsyncSeq2.take 2 |> ColdTask.toArrayAsync
+        single |> should equal [| 0 |]
+        do! Gen.getSeqImmutable variant |> AsyncSeq2.take 11 |> verifyDigitsAsString "ABCDEFGHIJ"
+        do! Gen.getSeqImmutable variant |> AsyncSeq2.take 10_000_000 |> verifyDigitsAsString "ABCDEFGHIJ"
+    }
 
     [<Theory; ClassData(typeof<TestImmTaskSeq>)>]
     let ``AsyncSeq2-truncate returns at least 'count' items`` variant = task {

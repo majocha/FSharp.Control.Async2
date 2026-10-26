@@ -49,7 +49,7 @@ let ``yield and nested yield from seq and async sequence preserve order`` () =
 
 [<Fact>]
 let ``empty singleton and ofSeq are interoperable`` () =
-    Assert.Empty(drain (AsyncSeq2.empty<int> ()))
+    Assert.Empty(drain (AsyncSeq2.empty<int>))
     Assert.Equal<int>([| 42 |], drain (AsyncSeq2.singleton 42))
     Assert.Equal<int>([| 1; 2 |], drain (AsyncSeq2.ofSeq [ 1; 2 ]))
 
@@ -248,7 +248,7 @@ let ``terminal operations and transformations compose`` () =
     Assert.Equal(5, source |> AsyncSeq2.length |> run)
     Assert.False(source |> AsyncSeq2.isEmpty |> run)
     Assert.Equal<int list>([ 20; 21; 40; 41; 50 ], source |> AsyncSeq2.toList |> run)
-    Assert.True(AsyncSeq2.empty<int> () |> AsyncSeq2.isEmpty |> run)
+    Assert.True(AsyncSeq2.empty<int> |> AsyncSeq2.isEmpty |> run)
 
 [<Fact>]
 let ``async transformations and iteration use async2`` () =

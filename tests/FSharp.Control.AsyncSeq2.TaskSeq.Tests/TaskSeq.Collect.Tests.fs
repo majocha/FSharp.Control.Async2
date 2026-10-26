@@ -15,10 +15,10 @@ module EmptySeq =
     [<Fact>]
     let ``Null source is invalid`` () =
         assertNullArg
-        <| fun () -> AsyncSeq2.collect (fun _ -> (AsyncSeq2.empty ())) null
+        <| fun () -> AsyncSeq2.collect (fun _ -> (AsyncSeq2.empty)) null
 
         assertNullArg
-        <| fun () -> AsyncSeq2.collectAsync (fun _ -> async2 { return AsyncSeq2.empty () }) null
+        <| fun () -> AsyncSeq2.collectAsync (fun _ -> async2 { return AsyncSeq2.empty }) null
 
     [<Theory; ClassData(typeof<TestEmptyVariants>)>]
     let ``AsyncSeq2-collect collecting emptiness`` variant =

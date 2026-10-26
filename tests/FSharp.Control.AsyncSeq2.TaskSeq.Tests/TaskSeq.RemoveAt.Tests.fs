@@ -33,13 +33,8 @@ module EmptySeq =
         |> should throwAsyncExact typeof<ArgumentException>
 
     [<Theory; ClassData(typeof<TestEmptyVariants>)>]
-    let ``AsyncSeq2-removeManyAt(0) on empty input raises`` variant =
-        fun () ->
-            Gen.getEmptyVariant variant
-            |> AsyncSeq2.removeManyAt 0 0
-            |> consumeTaskSeq
-
-        |> should throwAsyncExact typeof<ArgumentException>
+    let ``AsyncSeq2-removeManyAt removing nothing from empty input returns empty, as in AsyncSeq`` variant =
+        Gen.getEmptyVariant variant |> AsyncSeq2.removeManyAt 0 0 |> verifyEmpty
 
     [<Theory; ClassData(typeof<TestEmptyVariants>)>]
     let ``AsyncSeq2-removeAt(-1) on empty input should throw ArgumentException without consuming`` variant =
@@ -171,12 +166,13 @@ module Immutable =
     }
 
     [<Theory; ClassData(typeof<TestImmTaskSeq>)>]
-    let ``AsyncSeq2-removeManyAt can with a large count past the end of the sequence is fine`` variant = task {
-        do!
+    let ``AsyncSeq2-removeManyAt throws when the range runs past the end, as in AsyncSeq`` variant =
+        fun () ->
             Gen.getSeqImmutable variant
-            |> AsyncSeq2.removeManyAt 2 20_000 // try to remove too many is fine, like Seq.removeManyAt (regardless the docs at time of writing)
-            |> verifyDigitsAsString "AB"
-    }
+            |> AsyncSeq2.removeManyAt 2 20_000
+            |> consumeTaskSeq
+
+        |> should throwAsyncExact typeof<ArgumentException>
 
     [<Theory; ClassData(typeof<TestImmTaskSeq>)>]
     let ``AsyncSeq2-removeManyAt does not remove any item when count is zero`` variant = task {
@@ -187,12 +183,10 @@ module Immutable =
     }
 
     [<Theory; ClassData(typeof<TestImmTaskSeq>)>]
-    let ``AsyncSeq2-removeManyAt does not remove any item when count is negative`` variant = task {
-        do!
-            Gen.getSeqImmutable variant
-            |> AsyncSeq2.removeManyAt 1 -99
-            |> verifyDigitsAsString "ABCDEFGHIJ"
-    }
+    let ``AsyncSeq2-removeManyAt throws when count is negative, as in AsyncSeq`` variant =
+        fun () -> Gen.getSeqImmutable variant |> AsyncSeq2.removeManyAt 1 -99 |> ignore
+
+        |> should throw typeof<ArgumentException>
 
     [<Theory; ClassData(typeof<TestImmTaskSeq>)>]
     let ``AsyncSeq2-removeManyAt removes items at indexed positions`` variant = task {
@@ -243,16 +237,10 @@ module Immutable =
 
 
     [<Theory; ClassData(typeof<TestImmTaskSeq>)>]
-    let ``AsyncSeq2-removeManyAt throws when there are not enough elements for index`` variant =
-        // NOTE: only raises if INDEX is out of bounds, not when COUNT is out of bounds!!!
-
-        fun () ->
-            AsyncSeq2.singleton 1
-            // remove after 1
-            |> AsyncSeq2.removeManyAt 2 0 // regardless of count, it should raise
-            |> consumeTaskSeq
-
-        |> should throwAsyncExact typeof<ArgumentException>
+    let ``AsyncSeq2-removeManyAt throws when there are not enough elements for the range`` variant = task {
+        // As in AsyncSeq: removing nothing never fails, even past the end.
+        let! single = AsyncSeq2.singleton 1 |> AsyncSeq2.removeManyAt 2 0 |> ColdTask.toArrayAsync
+        single |> should equal [| 1 |]
 
         fun () ->
             Gen.getSeqImmutable variant
@@ -261,13 +249,10 @@ module Immutable =
 
         |> should throwAsyncExact typeof<ArgumentException>
 
-        fun () ->
-            Gen.getSeqImmutable variant
-            |> AsyncSeq2.removeManyAt 10_000_000 -5 // even with neg. count
-            |> consumeTaskSeq
+        fun () -> Gen.getSeqImmutable variant |> AsyncSeq2.removeManyAt 10_000_000 -5 |> ignore // negative count
 
-        |> should throwAsyncExact typeof<ArgumentException>
-
+        |> should throw typeof<ArgumentException>
+    }
 
 
 module SideEffects =

@@ -22,7 +22,7 @@ module EmptySeq =
     [<Theory; ClassData(typeof<TestEmptyVariants>)>]
     let ``AsyncSeq2-last throws`` variant = task {
         fun () -> Gen.getEmptyVariant variant |> ColdTask.last |> Task.ignore
-        |> should throwAsyncExact typeof<ArgumentException>
+        |> should throwAsyncExact typeof<InvalidOperationException>
     }
 
     [<Theory; ClassData(typeof<TestEmptyVariants>)>]
@@ -36,7 +36,7 @@ module EmptySeq =
         let mutable x = 0
 
         fun () -> asyncSeq2 { do x <- x + 1 } |> ColdTask.last |> Task.ignore
-        |> should throwAsyncExact typeof<ArgumentException>
+        |> should throwAsyncExact typeof<InvalidOperationException>
 
         // side effect must have run!
         x |> should equal 1

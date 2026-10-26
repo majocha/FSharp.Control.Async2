@@ -249,7 +249,7 @@ module Other =
         |> should throwAsyncExact typeof<ArgumentException>
 
         fun () ->
-            (AsyncSeq2.empty<string> ())
+            (AsyncSeq2.empty<string>)
             |> ColdTask.item Int32.MaxValue
             |> Task.ignore
         |> should throwAsyncExact typeof<ArgumentException>
@@ -263,7 +263,7 @@ module Other =
 
         nope |> should be None'
 
-        let! nope = (AsyncSeq2.empty<string> ()) |> ColdTask.tryItem Int32.MaxValue
+        let! nope = (AsyncSeq2.empty<string>) |> ColdTask.tryItem Int32.MaxValue
         nope |> should be None'
     }
 
@@ -280,14 +280,14 @@ module Other =
         fun () -> make50 () |> ColdTask.item Int32.MinValue |> Task.ignore
         |> should throwAsyncExact typeof<ArgumentException>
 
-        fun () -> (AsyncSeq2.empty<string> ()) |> ColdTask.item -1 |> Task.ignore
+        fun () -> (AsyncSeq2.empty<string>) |> ColdTask.item -1 |> Task.ignore
         |> should throwAsyncExact typeof<ArgumentException>
 
-        fun () -> (AsyncSeq2.empty<string> ()) |> ColdTask.item -10000 |> Task.ignore
+        fun () -> (AsyncSeq2.empty<string>) |> ColdTask.item -10000 |> Task.ignore
         |> should throwAsyncExact typeof<ArgumentException>
 
         fun () ->
-            (AsyncSeq2.empty<string> ())
+            (AsyncSeq2.empty<string>)
             |> ColdTask.item Int32.MinValue
             |> Task.ignore
         |> should throwAsyncExact typeof<ArgumentException>
@@ -306,12 +306,12 @@ module Other =
         let! nothing = make50 () |> ColdTask.tryItem Int32.MinValue
         nothing |> should be None'
 
-        let! nothing = (AsyncSeq2.empty<string> ()) |> ColdTask.tryItem -1
+        let! nothing = (AsyncSeq2.empty<string>) |> ColdTask.tryItem -1
         nothing |> should be None'
 
-        let! nothing = (AsyncSeq2.empty<string> ()) |> ColdTask.tryItem -10000
+        let! nothing = (AsyncSeq2.empty<string>) |> ColdTask.tryItem -10000
         nothing |> should be None'
 
-        let! nothing = (AsyncSeq2.empty<string> ()) |> ColdTask.tryItem Int32.MinValue
+        let! nothing = (AsyncSeq2.empty<string>) |> ColdTask.tryItem Int32.MinValue
         nothing |> should be None'
     }

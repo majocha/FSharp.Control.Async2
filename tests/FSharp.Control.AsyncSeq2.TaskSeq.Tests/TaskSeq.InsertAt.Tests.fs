@@ -22,7 +22,7 @@ module EmptySeq =
         assertNullArg <| fun () -> AsyncSeq2.insertAt 0 99 null
 
         assertNullArg
-        <| fun () -> AsyncSeq2.insertManyAt 0 (AsyncSeq2.empty ()) null
+        <| fun () -> AsyncSeq2.insertManyAt 0 (AsyncSeq2.empty) null
 
     [<Fact>]
     let ``Null values argument is invalid for insertManyAt`` () =
@@ -47,7 +47,7 @@ module EmptySeq =
     [<Fact>]
     let ``AsyncSeq2-insertAt(-1) should throw ArgumentException on any input`` () =
         fun () ->
-            (AsyncSeq2.empty<int> ())
+            (AsyncSeq2.empty<int>)
             |> AsyncSeq2.insertAt -1 42
             |> consumeTaskSeq
 
@@ -93,7 +93,7 @@ module EmptySeq =
     [<Fact>]
     let ``AsyncSeq2-insertManyAt(-1) should throw ArgumentException on any input`` () =
         fun () ->
-            (AsyncSeq2.empty<int> ())
+            (AsyncSeq2.empty<int>)
             |> AsyncSeq2.insertManyAt -1 (AsyncSeq2.ofArray [| 42; 43; 44 |])
             |> consumeTaskSeq
 
@@ -123,14 +123,14 @@ module EmptySeq =
 
     [<Fact>]
     let ``AsyncSeq2-insertManyAt() with empty sequenc as source`` () =
-        (AsyncSeq2.empty<int> ())
-        |> AsyncSeq2.insertManyAt 0 (AsyncSeq2.empty ())
+        (AsyncSeq2.empty<int>)
+        |> AsyncSeq2.insertManyAt 0 (AsyncSeq2.empty)
         |> verifyEmpty
 
     [<Fact>]
     let ``AsyncSeq2-insertManyAt() with empty sequence as source applies to non-empty sequence`` () =
         AsyncSeq2.init 10 id
-        |> AsyncSeq2.insertManyAt 2 (AsyncSeq2.empty ())
+        |> AsyncSeq2.insertManyAt 2 (AsyncSeq2.empty)
         |> verify0To9
 
 module Immutable =

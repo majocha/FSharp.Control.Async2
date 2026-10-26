@@ -15,12 +15,12 @@ open Microsoft.FSharp.Control.AsyncSeq2Implementation
 module EmptySeq =
     [<Fact>]
     let ``Null source is invalid`` () =
-        assertNullArg <| fun () -> AsyncSeq2.except null (AsyncSeq2.empty ())
-        assertNullArg <| fun () -> AsyncSeq2.except (AsyncSeq2.empty ()) null
+        assertNullArg <| fun () -> AsyncSeq2.except null (AsyncSeq2.empty)
+        assertNullArg <| fun () -> AsyncSeq2.except (AsyncSeq2.empty) null
         assertNullArg <| fun () -> AsyncSeq2.except null null
 
         assertNullArg
-        <| fun () -> AsyncSeq2.exceptOfSeq null (AsyncSeq2.empty ())
+        <| fun () -> AsyncSeq2.exceptOfSeq null (AsyncSeq2.empty)
 
         assertNullArg
         <| fun () -> AsyncSeq2.exceptOfSeq Seq.empty null
@@ -42,12 +42,12 @@ module EmptySeq =
     [<Theory; ClassData(typeof<TestEmptyVariants>)>]
     let ``AsyncSeq2-except v2`` variant =
         Gen.getEmptyVariant variant
-        |> AsyncSeq2.except (AsyncSeq2.empty ())
+        |> AsyncSeq2.except (AsyncSeq2.empty)
         |> verifyEmpty
 
     [<Theory; ClassData(typeof<TestEmptyVariants>)>]
     let ``AsyncSeq2-except v3`` variant =
-        (AsyncSeq2.empty ())
+        (AsyncSeq2.empty)
         |> AsyncSeq2.except (Gen.getEmptyVariant variant)
         |> verifyEmpty
 
@@ -78,7 +78,7 @@ module Immutable =
     [<Fact>]
     let ``AsyncSeq2-except removes duplicates with empty itemsToExcept`` () =
         AsyncSeq2.ofList [ 1; 1; 2; 3; 4; 12; 12; 12; 13; 13; 13; 13; 13; 99 ]
-        |> AsyncSeq2.except (AsyncSeq2.empty ())
+        |> AsyncSeq2.except (AsyncSeq2.empty)
         |> ColdTask.toArrayAsync
         |> Task.map (should equal [| 1; 2; 3; 4; 12; 13; 99 |])
 

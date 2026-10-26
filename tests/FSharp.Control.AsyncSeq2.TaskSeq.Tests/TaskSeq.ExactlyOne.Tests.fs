@@ -25,7 +25,7 @@ module EmptySeq =
             Gen.getEmptyVariant variant
             |> ColdTask.exactlyOne
             |> Task.ignore
-        |> should throwAsyncExact typeof<ArgumentException>
+        |> should throwAsyncExact typeof<InvalidOperationException>
     }
 
     [<Theory; ClassData(typeof<TestEmptyVariants>)>]
@@ -44,7 +44,7 @@ module Other =
             }
             |> ColdTask.exactlyOne
             |> Task.ignore
-        |> should throwAsyncExact typeof<ArgumentException>
+        |> should throwAsyncExact typeof<InvalidOperationException>
     }
 
     [<Fact>]
@@ -53,7 +53,7 @@ module Other =
             Gen.sideEffectTaskSeqMicro 50L<µs> 1000L<µs> 2
             |> ColdTask.exactlyOne
             |> Task.ignore
-        |> should throwAsyncExact typeof<ArgumentException>
+        |> should throwAsyncExact typeof<InvalidOperationException>
     }
 
     [<Fact>]
@@ -77,7 +77,7 @@ module Other =
             Gen.sideEffectTaskSeqMicro 50L<µs> 300L<µs> 200
             |> ColdTask.exactlyOne
             |> Task.ignore
-        |> should throwAsyncExact typeof<ArgumentException>
+        |> should throwAsyncExact typeof<InvalidOperationException>
     }
 
     [<Fact>]
@@ -128,7 +128,7 @@ module Immutable =
             Gen.getSeqImmutable variant
             |> ColdTask.exactlyOne
             |> Task.ignore
-        |> should throwAsyncExact typeof<ArgumentException>
+        |> should throwAsyncExact typeof<InvalidOperationException>
 
     [<Theory; ClassData(typeof<TestImmTaskSeq>)>]
     let ``AsyncSeq2-tryExactlyOne returns None`` variant = task {
@@ -153,7 +153,7 @@ module SideEffects =
         }
 
         fun () -> ts |> ColdTask.exactlyOne |> Task.ignore
-        |> should throwAsyncExact typeof<ArgumentException>
+        |> should throwAsyncExact typeof<InvalidOperationException>
 
         i |> should equal 2 // last side effect is not executed
     }
@@ -185,7 +185,7 @@ module SideEffects =
         }
 
         fun () -> ts |> ColdTask.exactlyOne |> Task.ignore
-        |> should throwAsyncExact typeof<ArgumentException>
+        |> should throwAsyncExact typeof<InvalidOperationException>
 
         i |> should equal 3 // last side effect is ALSO executed
     }
@@ -244,7 +244,7 @@ module SideEffects =
             Gen.getSeqWithSideEffect variant
             |> ColdTask.exactlyOne
             |> Task.ignore
-        |> should throwAsyncExact typeof<ArgumentException>
+        |> should throwAsyncExact typeof<InvalidOperationException>
 
     [<Theory; ClassData(typeof<TestSideEffectTaskSeq>)>]
     let ``AsyncSeq2-exactlyOne throws, but sequence remains accessible`` variant = task {
@@ -254,7 +254,7 @@ module SideEffects =
             try
                 return! ColdTask.exactlyOne ts
             with ex ->
-                ex |> should be ofExactType<ArgumentException>
+                ex |> should be ofExactType<InvalidOperationException>
                 return -42
         }
 

@@ -27,7 +27,7 @@ module EmptySeq =
             |> ColdTask.reduce (fun a b -> a + b)
             |> Task.ignore
 
-        |> should throwAsyncExact typeof<System.ArgumentException>
+        |> should throwAsyncExact typeof<System.InvalidOperationException>
 
     [<Theory; ClassData(typeof<TestEmptyVariants>)>]
     let ``AsyncSeq2-reduceAsync raises on empty`` variant =
@@ -36,7 +36,7 @@ module EmptySeq =
             |> ColdTask.reduceAsync (fun a b -> task { return a + b })
             |> Task.ignore
 
-        |> should throwAsyncExact typeof<System.ArgumentException>
+        |> should throwAsyncExact typeof<System.InvalidOperationException>
 
 module Immutable =
     [<Theory; ClassData(typeof<TestImmTaskSeq>)>]

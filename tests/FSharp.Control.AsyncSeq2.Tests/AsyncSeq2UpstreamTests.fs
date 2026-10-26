@@ -239,8 +239,8 @@ let ``AsyncSeq2.min returns minimum element``() =
 
 [<Fact>]
 let ``AsyncSeq2.min raises on empty sequence``() =
-  Assert.Throws<System.ArgumentException>(fun () ->
-      (AsyncSeq2.empty<int> ()) |> AsyncSeq2.min |> Async2.RunSynchronously |> ignore) |> ignore
+  Assert.Throws<System.InvalidOperationException>(fun () ->
+      (AsyncSeq2.empty<int>) |> AsyncSeq2.min |> Async2.RunSynchronously |> ignore) |> ignore
 
 [<Fact>]
 let ``AsyncSeq2.max returns maximum element``() =
@@ -251,8 +251,8 @@ let ``AsyncSeq2.max returns maximum element``() =
 
 [<Fact>]
 let ``AsyncSeq2.max raises on empty sequence``() =
-  Assert.Throws<System.ArgumentException>(fun () ->
-      (AsyncSeq2.empty<int> ()) |> AsyncSeq2.max |> Async2.RunSynchronously |> ignore) |> ignore
+  Assert.Throws<System.InvalidOperationException>(fun () ->
+      (AsyncSeq2.empty<int>) |> AsyncSeq2.max |> Async2.RunSynchronously |> ignore) |> ignore
 
 [<Fact>]
 let ``AsyncSeq2.minBy returns element with minimum projected value``() =
@@ -305,7 +305,7 @@ let ``AsyncSeq2.average works``() =
 [<Fact>]
 let ``AsyncSeq2.average raises on empty sequence``() =
   Assert.Throws<System.ArgumentException>(fun () ->
-      (AsyncSeq2.empty<float> ()) |> AsyncSeq2.average |> Async2.RunSynchronously |> ignore
+      (AsyncSeq2.empty<float>) |> AsyncSeq2.average |> Async2.RunSynchronously |> ignore
   ) |> ignore
 
 [<Fact>]
@@ -612,7 +612,7 @@ let ``AsyncSeq2.chunkBySize various sizes``() =
 
 [<Fact>]
 let ``AsyncSeq2.chunkBySize empty``() =
-  let s = (AsyncSeq2.empty<int> ())
+  let s = (AsyncSeq2.empty<int>)
   let s' = s |> AsyncSeq2.chunkBySize 2 |> AsyncSeq2.toListSynchronously
   Assert.True(([] = s'))
 
@@ -642,7 +642,7 @@ let ``AsyncSeq2.bufferByCountAndTime various sizes``() =
 
 [<Fact>]
 let ``AsyncSeq2.bufferByTimeAndCount empty``() =
-  let s = (AsyncSeq2.empty<int> ())
+  let s = (AsyncSeq2.empty<int>)
   let actual = AsyncSeq2.bufferByCountAndTime 2 10 s |> AsyncSeq2.toListSynchronously
   Assert.True((actual = []))
 
@@ -1312,7 +1312,7 @@ let ``AsyncSeq2.takeUntil should complete immediately with completed signal``() 
     yield 2
   }
   let actual = AsyncSeq2.takeUntilSignal AsyncOps.unit s
-  Assert.True(EQ (AsyncSeq2.empty ()) actual)
+  Assert.True(EQ (AsyncSeq2.empty) actual)
 
 
 [<Fact>]
@@ -1344,7 +1344,7 @@ let ``AsyncSeq2.skipUntil should not skip with completed signal``() =
 [<Fact>]
 let ``AsyncSeq2.skipUntil should skip everything with never signal``() =
   let actual = [1;2;3;4] |> AsyncSeq2.ofSeq |> AsyncSeq2.skipUntilSignal AsyncOps.never
-  Assert.True(EQ (AsyncSeq2.empty ()) actual)
+  Assert.True(EQ (AsyncSeq2.empty) actual)
 
 [<Fact>]
 let ``AsyncSeq2.toBlockingSeq should work length 1``() =
@@ -2107,7 +2107,7 @@ let ``AsyncSeq2Src.put should yield when tapped after put`` () =
   src |> AsyncSeq2Src.put item
   let actual = src |> AsyncSeq2Src.toAsyncSeq
   src |> AsyncSeq2Src.close
-  let expected = (AsyncSeq2.empty ())
+  let expected = (AsyncSeq2.empty)
   Assert.AreEqual (expected, actual)
 
 [<Fact>]
@@ -2255,7 +2255,7 @@ let ``async.For with AsyncSeq should work``() =
 let ``async.For with empty AsyncSeq should work``() =
   async2 {
     let mutable count = 0
-    let source = (AsyncSeq2.empty ())
+    let source = (AsyncSeq2.empty)
 
     do! async2 {
       for item in source do
@@ -2306,7 +2306,7 @@ let ``AsyncSeqExtensions - async.For with AsyncSeq`` () =
 let ``AsyncSeqExtensions - async.For with empty AsyncSeq`` () =
   let mutable result = []
   let computation = async2 {
-    for item in (AsyncSeq2.empty ()) do
+    for item in (AsyncSeq2.empty) do
       result <- item :: result
   }
   computation |> Async2.RunSynchronously
@@ -2338,7 +2338,7 @@ let ``AsyncSeq2.toBlockingSeq should work`` () =
 
 [<Fact>]
 let ``AsyncSeq2.toBlockingSeq with empty AsyncSeq`` () =
-  let seqResult = AsyncSeq2.toBlockingSeq (AsyncSeq2.empty ()) |> Seq.toList
+  let seqResult = AsyncSeq2.toBlockingSeq (AsyncSeq2.empty) |> Seq.toList
   Assert.AreEqual([], seqResult)
 
 [<Fact>]
@@ -2559,7 +2559,7 @@ let ``AsyncSeq2.toBlockingSeq should work with three values``() =
 
 [<Fact>]
 let ``AsyncSeq2.toBlockingSeq with empty AsyncSeq should work``() =
-  let source = (AsyncSeq2.empty ())
+  let source = (AsyncSeq2.empty)
   let result = AsyncSeq2.toBlockingSeq source |> Seq.toList
   Assert.AreEqual([], result)
 
@@ -2582,7 +2582,7 @@ let ``AsyncSeq2.toBlockingSeq with exception should propagate``() =
 
 [<Fact>]
 let ``AsyncSeq2.fold with empty sequence should return seed``() =
-  let result = (AsyncSeq2.empty ())
+  let result = (AsyncSeq2.empty)
                |> AsyncSeq2.fold (+) 10
                |> Async2.RunSynchronously
   Assert.AreEqual(10, result)
@@ -2602,9 +2602,9 @@ let ``AsyncSeq2.reduce single element returns that element`` () =
   Assert.AreEqual(42, result)
 
 [<Fact>]
-let ``AsyncSeq2.reduce empty sequence raises ArgumentException`` () =
-  Assert.Throws<ArgumentException>(fun () ->
-    (AsyncSeq2.empty<int> ())
+let ``AsyncSeq2.reduce empty sequence raises InvalidOperationException`` () =
+  Assert.Throws<InvalidOperationException>(fun () ->
+    (AsyncSeq2.empty<int>)
     |> AsyncSeq2.reduce (+)
     |> Async2.RunSynchronously
     |> ignore) |> ignore
@@ -2735,7 +2735,7 @@ let ``AsyncSeq2.threadStateAsync should maintain state correctly``() =
 
 [<Fact>]
 let ``AsyncSeq2.lastOrDefault should return default for empty sequence``() =
-  let result = (AsyncSeq2.empty ())
+  let result = (AsyncSeq2.empty)
                |> AsyncSeq2.lastOrDefault 999
                |> Async2.RunSynchronously
   Assert.AreEqual(999, result)
@@ -2824,7 +2824,7 @@ let ``AsyncSeq2.chunkBySize with size 1 should work`` () =
 
 [<Fact>]
 let ``AsyncSeq2.chunkBySize with empty sequence should return empty`` () =
-  let result = AsyncSeq2.chunkBySize 2 (AsyncSeq2.empty ()) |> AsyncSeq2.toListSynchronously
+  let result = AsyncSeq2.chunkBySize 2 (AsyncSeq2.empty) |> AsyncSeq2.toListSynchronously
   Assert.AreEqual([], result)
 
 [<Fact>]
@@ -2835,7 +2835,7 @@ let ``AsyncSeq2.chunkBySize with size larger than sequence should return partial
 
 [<Fact>]
 let ``AsyncSeq2.pairwise with empty sequence should return empty`` () =
-  let result = AsyncSeq2.pairwise (AsyncSeq2.empty ()) |> AsyncSeq2.toListSynchronously
+  let result = AsyncSeq2.pairwise (AsyncSeq2.empty) |> AsyncSeq2.toListSynchronously
   Assert.AreEqual([], result)
 
 [<Fact>]
@@ -2859,7 +2859,7 @@ let ``AsyncSeq2.pairwise with many elements produces correct pairs`` () =
 
 [<Fact>]
 let ``AsyncSeq2.windowed empty sequence returns empty`` () =
-  let result = AsyncSeq2.windowed 3 (AsyncSeq2.empty<int> ()) |> AsyncSeq2.toListSynchronously
+  let result = AsyncSeq2.windowed 3 (AsyncSeq2.empty<int>) |> AsyncSeq2.toListSynchronously
   Assert.AreEqual([], result)
 
 [<Fact>]
@@ -3048,7 +3048,7 @@ let ``AsyncSeqOp.FoldAsync with exception in folder should propagate`` () =
 
 [<Fact>]
 let ``AsyncSeq2.chunkBy empty sequence returns empty`` () =
-  let result = AsyncSeq2.chunkBy id (AsyncSeq2.empty<int> ()) |> AsyncSeq2.toListSynchronously
+  let result = AsyncSeq2.chunkBy id (AsyncSeq2.empty<int>) |> AsyncSeq2.toListSynchronously
   Assert.AreEqual([], result)
 
 [<Fact>]
@@ -3089,7 +3089,7 @@ let ``AsyncSeq2.distinct removes all duplicates`` () =
 
 [<Fact>]
 let ``AsyncSeq2.distinct empty sequence returns empty`` () =
-  let result = AsyncSeq2.distinct (AsyncSeq2.empty<int> ()) |> AsyncSeq2.toListSynchronously
+  let result = AsyncSeq2.distinct (AsyncSeq2.empty<int>) |> AsyncSeq2.toListSynchronously
   Assert.AreEqual([], result)
 
 [<Fact>]
@@ -3126,7 +3126,7 @@ let ``AsyncSeq2.countBy counts elements by key`` () =
 [<Fact>]
 let ``AsyncSeq2.countBy empty sequence returns empty array`` () =
   async2 {
-    let result = AsyncSeq2.countBy id (AsyncSeq2.empty<int> ()) |> Async2.RunSynchronously
+    let result = AsyncSeq2.countBy id (AsyncSeq2.empty<int>) |> Async2.RunSynchronously
     Assert.AreEqual([||], result)
   } |> Async2.RunSynchronously
 
@@ -3151,12 +3151,12 @@ let ``AsyncSeq2.exactlyOne returns single element`` () =
 
 [<Fact>]
 let ``AsyncSeq2.exactlyOne raises on empty sequence`` () =
-  Assert.Throws<ArgumentException>(fun () ->
-    AsyncSeq2.exactlyOne (AsyncSeq2.empty<int> ()) |> Async2.RunSynchronously |> ignore) |> ignore
+  Assert.Throws<InvalidOperationException>(fun () ->
+    AsyncSeq2.exactlyOne (AsyncSeq2.empty<int>) |> Async2.RunSynchronously |> ignore) |> ignore
 
 [<Fact>]
 let ``AsyncSeq2.exactlyOne raises on sequence with more than one element`` () =
-  Assert.Throws<ArgumentException>(fun () ->
+  Assert.Throws<InvalidOperationException>(fun () ->
     asyncSeq2 { yield 1; yield 2 } |> AsyncSeq2.exactlyOne |> Async2.RunSynchronously |> ignore) |> ignore
 
 [<Fact>]
@@ -3170,7 +3170,7 @@ let ``AsyncSeq2.tryExactlyOne returns Some for single element`` () =
 [<Fact>]
 let ``AsyncSeq2.tryExactlyOne returns None for empty sequence`` () =
   async2 {
-    let result = AsyncSeq2.tryExactlyOne (AsyncSeq2.empty<int> ()) |> Async2.RunSynchronously
+    let result = AsyncSeq2.tryExactlyOne (AsyncSeq2.empty<int>) |> Async2.RunSynchronously
     Assert.AreEqual(None, result)
   } |> Async2.RunSynchronously
 
@@ -3192,8 +3192,8 @@ let ``AsyncSeq2.head returns first element`` () =
 
 [<Fact>]
 let ``AsyncSeq2.head raises on empty sequence`` () =
-  Assert.Throws<ArgumentException>(fun () ->
-    AsyncSeq2.head (AsyncSeq2.empty<int> ()) |> Async2.RunSynchronously |> ignore) |> ignore
+  Assert.Throws<InvalidOperationException>(fun () ->
+    AsyncSeq2.head (AsyncSeq2.empty<int>) |> Async2.RunSynchronously |> ignore) |> ignore
 
 // ===== iteri =====
 
@@ -3210,7 +3210,7 @@ let ``AsyncSeq2.iteri calls action with correct indices`` () =
 [<Fact>]
 let ``AsyncSeq2.iteri on empty sequence does nothing`` () =
   let mutable count = 0
-  (AsyncSeq2.empty<int> ())
+  (AsyncSeq2.empty<int>)
   |> AsyncSeq2.iteri (fun _ _ -> count <- count + 1)
   |> Async2.RunSynchronously
   Assert.AreEqual(0, count)
@@ -3269,12 +3269,9 @@ let ``AsyncSeq2.tail on singleton returns empty`` () =
   Assert.AreEqual([], result)
 
 [<Fact>]
-let ``AsyncSeq2.tail on empty raises`` () =
-  Assert.Throws<ArgumentException>(fun () ->
-    (AsyncSeq2.empty<int> ())
-    |> AsyncSeq2.tail
-    |> Async2.RunSynchronously
-    |> ignore) |> ignore
+let ``AsyncSeq2.tail on empty returns empty`` () =
+  let rest = AsyncSeq2.empty<int> |> AsyncSeq2.tail |> Async2.RunSynchronously
+  Assert.AreEqual([||], rest |> AsyncSeq2.toArrayAsync |> Async2.RunSynchronously)
 
 // ===== findAsync / existsAsync / forallAsync =====
 
@@ -3307,7 +3304,7 @@ let ``AsyncSeq2.existsAsync returns true when element found`` () =
 [<Fact>]
 let ``AsyncSeq2.existsAsync returns false on empty sequence`` () =
   let result =
-    (AsyncSeq2.empty<int> ())
+    (AsyncSeq2.empty<int>)
     |> AsyncSeq2.existsAsync (fun _ -> async2 { return true })
     |> Async2.RunSynchronously
   Assert.IsFalse(result)
@@ -3339,7 +3336,7 @@ let ``AsyncSeq2.forallAsync returns false when some do not match`` () =
 [<Fact>]
 let ``AsyncSeq2.forallAsync returns true on empty sequence`` () =
   let result =
-    (AsyncSeq2.empty<int> ())
+    (AsyncSeq2.empty<int>)
     |> AsyncSeq2.forallAsync (fun _ -> async2 { return false })
     |> Async2.RunSynchronously
   Assert.IsTrue(result)
@@ -3359,8 +3356,8 @@ let ``AsyncSeq2.last on singleton returns that element`` () =
 
 [<Fact>]
 let ``AsyncSeq2.last raises on empty sequence`` () =
-  Assert.Throws<ArgumentException>(fun () ->
-    AsyncSeq2.last (AsyncSeq2.empty<int> ()) |> Async2.RunSynchronously |> ignore) |> ignore
+  Assert.Throws<InvalidOperationException>(fun () ->
+    AsyncSeq2.last (AsyncSeq2.empty<int>) |> Async2.RunSynchronously |> ignore) |> ignore
 
 // ===== item =====
 
@@ -3406,14 +3403,14 @@ let ``AsyncSeq2.tryItem returns None for negative index`` () =
 
 [<Fact>]
 let ``AsyncSeq2.tryItem returns None on empty sequence`` () =
-  let result = AsyncSeq2.tryItem 0 (AsyncSeq2.empty<int> ()) |> Async2.RunSynchronously
+  let result = AsyncSeq2.tryItem 0 (AsyncSeq2.empty<int>) |> Async2.RunSynchronously
   Assert.AreEqual(None, result)
 
 // ===== isEmpty =====
 
 [<Fact>]
 let ``AsyncSeq2.isEmpty returns true for empty sequence`` () =
-  let result = AsyncSeq2.isEmpty (AsyncSeq2.empty<int> ()) |> Async2.RunSynchronously
+  let result = AsyncSeq2.isEmpty (AsyncSeq2.empty<int>) |> Async2.RunSynchronously
   Assert.True(result)
 
 [<Fact>]
@@ -3437,7 +3434,7 @@ let ``AsyncSeq2.tryHead returns Some for non-empty sequence`` () =
 
 [<Fact>]
 let ``AsyncSeq2.tryHead returns None for empty sequence`` () =
-  let result = AsyncSeq2.tryHead (AsyncSeq2.empty<int> ()) |> Async2.RunSynchronously
+  let result = AsyncSeq2.tryHead (AsyncSeq2.empty<int>) |> Async2.RunSynchronously
   Assert.AreEqual(None, result)
 
 // ===== except =====
@@ -3538,7 +3535,7 @@ let ``AsyncSeq2.tryFindIndexBack returns None when no match`` () =
 
 [<Fact>]
 let ``AsyncSeq2.tryFindIndexBack returns None for empty sequence`` () =
-  let result = (AsyncSeq2.empty<int> ()) |> AsyncSeq2.tryFindIndexBack (fun _ -> true) |> Async2.RunSynchronously
+  let result = (AsyncSeq2.empty<int>) |> AsyncSeq2.tryFindIndexBack (fun _ -> true) |> Async2.RunSynchronously
   Assert.AreEqual(None, result)
 
 [<Fact>]
@@ -3610,7 +3607,7 @@ let ``AsyncSeq2.tryFindBack returns None when no match`` () =
 [<Fact>]
 let ``AsyncSeq2.tryFindBack returns None on empty sequence`` () =
   let result =
-    (AsyncSeq2.empty<int> ())
+    (AsyncSeq2.empty<int>)
     |> AsyncSeq2.tryFindBack (fun _ -> true)
     |> Async2.RunSynchronously
   Assert.AreEqual(None, result)
@@ -3685,7 +3682,7 @@ let ``AsyncSeq2.sortWith sorts descending with negated comparer`` () =
 
 [<Fact>]
 let ``AsyncSeq2.sortWith returns empty array for empty sequence`` () =
-  let result = AsyncSeq2.sortWith compare (AsyncSeq2.empty<int> ()) |> Async2.RunSynchronously
+  let result = AsyncSeq2.sortWith compare (AsyncSeq2.empty<int>) |> Async2.RunSynchronously
   Assert.AreEqual([||], result)
 
 // ===== sortAsync / sortByAsync / sortDescendingAsync / sortByDescendingAsync / sortWithAsync =====
@@ -3697,7 +3694,7 @@ let ``AsyncSeq2.sortAsync sorts in ascending order`` () =
 
 [<Fact>]
 let ``AsyncSeq2.sortAsync returns empty array for empty sequence`` () =
-  let result = (AsyncSeq2.empty<int> ()) |> AsyncSeq2.sortAsync |> Async2.RunSynchronously
+  let result = (AsyncSeq2.empty<int>) |> AsyncSeq2.sortAsync |> Async2.RunSynchronously
   Assert.AreEqual([||], result)
 
 [<Fact>]
@@ -3742,7 +3739,7 @@ let ``AsyncSeq2.mapFold maps elements and accumulates state`` () =
 [<Fact>]
 let ``AsyncSeq2.mapFold returns empty array and initial state for empty sequence`` () =
   let results, finalState =
-    AsyncSeq2.mapFold (fun acc x -> (x, acc + x)) 99 (AsyncSeq2.empty<int> ()) |> Async2.RunSynchronously
+    AsyncSeq2.mapFold (fun acc x -> (x, acc + x)) 99 (AsyncSeq2.empty<int>) |> Async2.RunSynchronously
   Assert.AreEqual([||], results)
   Assert.AreEqual(99, finalState)
 
@@ -3758,7 +3755,7 @@ let ``AsyncSeq2.mapFoldAsync maps elements asynchronously and accumulates state`
 [<Fact>]
 let ``AsyncSeq2.mapFoldAsync returns empty array and initial state for empty sequence`` () =
   let results, finalState =
-    AsyncSeq2.mapFoldAsync (fun acc x -> async2 { return (x, acc + 1) }) 5 (AsyncSeq2.empty<int> ())
+    AsyncSeq2.mapFoldAsync (fun acc x -> async2 { return (x, acc + 1) }) 5 (AsyncSeq2.empty<int>)
     |> Async2.RunSynchronously
   Assert.AreEqual([||], results)
   Assert.AreEqual(5, finalState)
@@ -3778,14 +3775,14 @@ let ``AsyncSeq2.allPairs returns cartesian product`` () =
 [<Fact>]
 let ``AsyncSeq2.allPairs returns empty when first source is empty`` () =
   let result =
-    AsyncSeq2.allPairs (AsyncSeq2.empty<int> ()) (asyncSeq2 { yield 1; yield 2 })
+    AsyncSeq2.allPairs (AsyncSeq2.empty<int>) (asyncSeq2 { yield 1; yield 2 })
     |> AsyncSeq2.toArrayAsync |> Async2.RunSynchronously
   Assert.AreEqual([||], result)
 
 [<Fact>]
 let ``AsyncSeq2.allPairs returns empty when second source is empty`` () =
   let result =
-    AsyncSeq2.allPairs (asyncSeq2 { yield 1; yield 2 }) (AsyncSeq2.empty<int> ())
+    AsyncSeq2.allPairs (asyncSeq2 { yield 1; yield 2 }) (AsyncSeq2.empty<int>)
     |> AsyncSeq2.toArrayAsync |> Async2.RunSynchronously
   Assert.AreEqual([||], result)
 
@@ -3800,7 +3797,7 @@ let ``AsyncSeq2.unzip splits pairs into two arrays`` () =
 
 [<Fact>]
 let ``AsyncSeq2.unzip empty source returns two empty arrays`` () =
-  let (lefts, rights) = AsyncSeq2.unzip (AsyncSeq2.empty<int * string> ()) |> Async2.RunSynchronously
+  let (lefts, rights) = AsyncSeq2.unzip (AsyncSeq2.empty<int * string>) |> Async2.RunSynchronously
   Assert.AreEqual([||], lefts)
   Assert.AreEqual([||], rights)
 
@@ -3824,7 +3821,7 @@ let ``AsyncSeq2.unzip3 splits triples into three arrays`` () =
 
 [<Fact>]
 let ``AsyncSeq2.unzip3 empty source returns three empty arrays`` () =
-  let (as1, as2, as3) = AsyncSeq2.unzip3 (AsyncSeq2.empty<int * string * bool> ()) |> Async2.RunSynchronously
+  let (as1, as2, as3) = AsyncSeq2.unzip3 (AsyncSeq2.empty<int * string * bool>) |> Async2.RunSynchronously
   Assert.AreEqual([||], as1)
   Assert.AreEqual([||], as2)
   Assert.AreEqual([||], as3)
@@ -3871,7 +3868,7 @@ let ``AsyncSeq2.rev reverses a sequence`` () =
 
 [<Fact>]
 let ``AsyncSeq2.rev returns empty sequence for empty input`` () =
-  let result = AsyncSeq2.rev (AsyncSeq2.empty<int> ()) |> AsyncSeq2.toArrayAsync |> Async2.RunSynchronously
+  let result = AsyncSeq2.rev (AsyncSeq2.empty<int>) |> AsyncSeq2.toArrayAsync |> Async2.RunSynchronously
   Assert.AreEqual([||], result)
 
 [<Fact>]
@@ -3905,7 +3902,7 @@ let ``AsyncSeq2.splitAt with count >= length returns all elements in first and e
 
 [<Fact>]
 let ``AsyncSeq2.splitAt on empty sequence returns empty first and empty rest`` () =
-  let first, rest = AsyncSeq2.splitAt 3 (AsyncSeq2.empty<int> ()) |> Async2.RunSynchronously
+  let first, rest = AsyncSeq2.splitAt 3 (AsyncSeq2.empty<int>) |> Async2.RunSynchronously
   let restArr = rest |> AsyncSeq2.toArrayAsync |> Async2.RunSynchronously
   Assert.AreEqual([||], first)
   Assert.AreEqual([||], restArr)
@@ -3921,7 +3918,7 @@ let ``AsyncSeq2.splitAt with count equal to length returns all in first and empt
 [<Fact>]
 let ``AsyncSeq2.splitAt with negative count throws ArgumentException`` () =
   Assert.Throws<System.ArgumentException>(fun () ->
-    AsyncSeq2.splitAt -1 (AsyncSeq2.empty<int> ()) |> Async2.RunSynchronously |> ignore) |> ignore
+    AsyncSeq2.splitAt -1 (AsyncSeq2.empty<int>) |> Async2.RunSynchronously |> ignore) |> ignore
 
 [<Fact>]
 let ``AsyncSeq2.splitAt disposes enumerator when source throws during collection`` () =
@@ -4080,7 +4077,7 @@ let ``AsyncSeq2.insertAt appends when index equals sequence length`` () =
 [<Fact>]
 let ``AsyncSeq2.insertAt inserts into empty sequence at index 0`` () =
   let result =
-    (AsyncSeq2.empty<int> ())
+    (AsyncSeq2.empty<int>)
     |> AsyncSeq2.insertAt 0 42
     |> AsyncSeq2.toArrayAsync
     |> Async2.RunSynchronously
@@ -4217,22 +4214,18 @@ let ``AsyncSeq2.removeManyAt raises ArgumentException for negative index`` () =
   |> ignore
 
 [<Fact>]
-let ``AsyncSeq2.removeManyAt negative count leaves sequence unchanged`` () =
-  let result =
-    AsyncSeq2.ofSeq [ 1; 2; 3 ]
-    |> AsyncSeq2.removeManyAt 0 -1
-    |> AsyncSeq2.toArrayAsync
-    |> Async2.RunSynchronously
-  Assert.AreEqual([| 1; 2; 3 |], result)
+let ``AsyncSeq2.removeManyAt negative count raises`` () =
+  Assert.Throws<ArgumentException>(fun () ->
+    AsyncSeq2.ofSeq [ 1; 2; 3 ] |> AsyncSeq2.removeManyAt 0 -1 |> ignore) |> ignore
 
 [<Fact>]
-let ``AsyncSeq2.removeManyAt removes to end when range exceeds sequence`` () =
-  let result =
+let ``AsyncSeq2.removeManyAt raises when range exceeds sequence`` () =
+  Assert.Throws<ArgumentException>(fun () ->
     AsyncSeq2.ofSeq [ 1; 2; 3 ]
     |> AsyncSeq2.removeManyAt 2 2
     |> AsyncSeq2.toArrayAsync
     |> Async2.RunSynchronously
-  Assert.AreEqual([| 1; 2 |], result)
+    |> ignore) |> ignore
 
 // ===== splitInto =====
 
@@ -4281,7 +4274,7 @@ let ``AsyncSeq2.splitInto with count greater than length returns one chunk per e
 [<Fact>]
 let ``AsyncSeq2.splitInto with empty sequence returns empty array`` () =
   let result =
-    (AsyncSeq2.empty<int> ())
+    (AsyncSeq2.empty<int>)
     |> AsyncSeq2.splitInto 3
     |> Async2.RunSynchronously
   Assert.AreEqual([||], result)
@@ -4295,10 +4288,9 @@ let ``AsyncSeq2.splitInto raises ArgumentException when count is zero`` () =
   |> ignore
 
 [<Fact>]
-let ``AsyncSeq2.take more than length raises and truncate returns all elements`` () =
+let ``AsyncSeq2.take and truncate more than length return all elements`` () =
   let source = AsyncSeq2.ofSeq [ 1; 2; 3 ]
-  Assert.Throws<ArgumentException>(fun () ->
-    source |> AsyncSeq2.take 10 |> AsyncSeq2.toArrayAsync |> Async2.RunSynchronously |> ignore) |> ignore
+  Assert.AreEqual([| 1; 2; 3 |], source |> AsyncSeq2.take 10 |> AsyncSeq2.toArrayAsync |> Async2.RunSynchronously)
   let result =
     source
     |> AsyncSeq2.truncate 10
@@ -4325,10 +4317,9 @@ let ``AsyncSeq2.take from infinite sequence`` () =
   Assert.AreEqual([| 7; 7; 7; 7; 7 |], result)
 
 [<Fact>]
-let ``AsyncSeq2.skip more than length raises and drop returns empty`` () =
+let ``AsyncSeq2.skip and drop more than length return empty`` () =
   let source = AsyncSeq2.ofSeq [ 1; 2; 3 ]
-  Assert.Throws<ArgumentException>(fun () ->
-    source |> AsyncSeq2.skip 10 |> AsyncSeq2.toArrayAsync |> Async2.RunSynchronously |> ignore) |> ignore
+  Assert.AreEqual([||], source |> AsyncSeq2.skip 10 |> AsyncSeq2.toArrayAsync |> Async2.RunSynchronously)
   let result =
     source
     |> AsyncSeq2.drop 10
@@ -4427,7 +4418,7 @@ let ``AsyncSeq2.indexed pairs elements with indices`` () =
 [<Fact>]
 let ``AsyncSeq2.indexed on empty sequence returns empty`` () =
   let result =
-    (AsyncSeq2.empty<int> ())
+    (AsyncSeq2.empty<int>)
     |> AsyncSeq2.indexed
     |> AsyncSeq2.toArrayAsync
     |> Async2.RunSynchronously
@@ -4466,7 +4457,7 @@ let ``AsyncSeq2.iteriAsync calls action with correct indices and values`` () =
 [<Fact>]
 let ``AsyncSeq2.iteriAsync on empty sequence does not call action`` () =
   let mutable callCount = 0
-  (AsyncSeq2.empty<int> ())
+  (AsyncSeq2.empty<int>)
   |> AsyncSeq2.iteriAsync (fun _ _ -> async2 { callCount <- callCount + 1 })
   |> Async2.RunSynchronously
   Assert.AreEqual(0, callCount)
@@ -4492,7 +4483,7 @@ let ``AsyncSeq2.tryLast returns Some last element for non-empty sequence`` () =
 [<Fact>]
 let ``AsyncSeq2.tryLast returns None for empty sequence`` () =
   let result =
-    (AsyncSeq2.empty<int> ())
+    (AsyncSeq2.empty<int>)
     |> AsyncSeq2.tryLast
     |> Async2.RunSynchronously
   Assert.AreEqual(None, result)
@@ -4548,9 +4539,9 @@ let ``AsyncSeq2.replicateUntilNoneAsync returns single element then stops`` () =
 // ===== reduceAsync edge case =====
 
 [<Fact>]
-let ``AsyncSeq2.reduceAsync raises ArgumentException on empty sequence`` () =
-  Assert.Throws<System.ArgumentException>(fun () ->
-    (AsyncSeq2.empty<int> ())
+let ``AsyncSeq2.reduceAsync raises InvalidOperationException on empty sequence`` () =
+  Assert.Throws<System.InvalidOperationException>(fun () ->
+    (AsyncSeq2.empty<int>)
     |> AsyncSeq2.reduceAsync (fun a b -> async2 { return a + b })
     |> Async2.RunSynchronously
     |> ignore)
@@ -4559,7 +4550,7 @@ let ``AsyncSeq2.reduceAsync raises ArgumentException on empty sequence`` () =
 
 [<Fact>]
 let ``AsyncSeq2.tryTail returns None for empty`` () =
-  let result = (AsyncSeq2.empty<int> ()) |> AsyncSeq2.tryTail |> Async2.RunSynchronously
+  let result = (AsyncSeq2.empty<int>) |> AsyncSeq2.tryTail |> Async2.RunSynchronously
   Assert.IsTrue(result.IsNone)
 
 [<Fact>]
@@ -4627,7 +4618,7 @@ let ``AsyncSeq2.lengthByAsync counts matching elements`` () =
 [<Fact>]
 let ``AsyncSeq2.lengthBy returns 0 for empty`` () =
   let result =
-    (AsyncSeq2.empty<int> ())
+    (AsyncSeq2.empty<int>)
     |> AsyncSeq2.lengthBy (fun _ -> true)
     |> Async2.RunSynchronously
   Assert.AreEqual(0L, result)
@@ -4655,7 +4646,7 @@ let ``AsyncSeq2.compareWith lexicographic difference`` () =
 
 [<Fact>]
 let ``AsyncSeq2.compareWith two empty sequences returns 0`` () =
-  let result = AsyncSeq2.compareWith compare (AsyncSeq2.empty<int> ()) (AsyncSeq2.empty<int> ()) |> Async2.RunSynchronously
+  let result = AsyncSeq2.compareWith compare (AsyncSeq2.empty<int>) (AsyncSeq2.empty<int>) |> Async2.RunSynchronously
   Assert.AreEqual(0, result)
 
 [<Fact>]
@@ -4670,7 +4661,7 @@ let ``AsyncSeq2.takeWhileInclusiveAsync includes boundary element`` () =
 [<Fact>]
 let ``AsyncSeq2.takeWhileInclusiveAsync empty source returns empty`` () =
   let result =
-    (AsyncSeq2.empty<int> ())
+    (AsyncSeq2.empty<int>)
     |> AsyncSeq2.takeWhileInclusiveAsync (fun _ -> async2 { return true })
     |> AsyncSeq2.toListAsync
     |> Async2.RunSynchronously
@@ -4750,7 +4741,7 @@ let ``AsyncSeq2.collectAsync flattens async-bound inner sequences`` () =
 [<Fact>]
 let ``AsyncSeq2.collectAsync on empty returns empty`` () =
   let result =
-    (AsyncSeq2.empty<int> ())
+    (AsyncSeq2.empty<int>)
     |> AsyncSeq2.collectAsync (fun x -> async2 { return AsyncSeq2.singleton x })
     |> AsyncSeq2.toListAsync
     |> Async2.RunSynchronously
@@ -4768,7 +4759,7 @@ let ``AsyncSeq2.partition splits by predicate`` () =
 [<Fact>]
 let ``AsyncSeq2.partition empty returns two empty arrays`` () =
   let trues, falses =
-    (AsyncSeq2.empty<int> ())
+    (AsyncSeq2.empty<int>)
     |> AsyncSeq2.partition (fun _ -> true)
     |> Async2.RunSynchronously
   Assert.AreEqual([||], trues)
@@ -4797,7 +4788,7 @@ let ``AsyncSeq2.mapiAsync maps elements with their int64 index`` () =
 [<Fact>]
 let ``AsyncSeq2.mapiAsync on empty sequence returns empty`` () =
   let result =
-    (AsyncSeq2.empty<string> ())
+    (AsyncSeq2.empty<string>)
     |> AsyncSeq2.mapiAsync (fun i x -> async2 { return sprintf "%d:%s" i x })
     |> AsyncSeq2.toArrayAsync
     |> Async2.RunSynchronously
@@ -4846,7 +4837,7 @@ let ``AsyncSeq2.tryPickAsync returns None when no element matches`` () =
 [<Fact>]
 let ``AsyncSeq2.tryPickAsync returns None for empty sequence`` () =
   let result =
-    (AsyncSeq2.empty<int> ())
+    (AsyncSeq2.empty<int>)
     |> AsyncSeq2.tryPickAsync (fun x -> async2 { return Some x })
     |> Async2.RunSynchronously
   Assert.AreEqual(None, result)
@@ -4878,7 +4869,7 @@ let ``AsyncSeq2.pickAsync raises KeyNotFoundException when no match`` () =
 [<Fact>]
 let ``AsyncSeq2.pickAsync raises KeyNotFoundException for empty sequence`` () =
   Assert.Throws<System.Collections.Generic.KeyNotFoundException>(fun () ->
-    (AsyncSeq2.empty<int> ())
+    (AsyncSeq2.empty<int>)
     |> AsyncSeq2.pickAsync (fun x -> async2 { return Some x })
     |> Async2.RunSynchronously
     |> ignore) |> ignore
@@ -4898,7 +4889,7 @@ let ``AsyncSeq2.groupByAsync groups elements by async projection`` () =
 [<Fact>]
 let ``AsyncSeq2.groupByAsync on empty sequence returns empty`` () =
   let result =
-    (AsyncSeq2.empty<int> ())
+    (AsyncSeq2.empty<int>)
     |> AsyncSeq2.groupByAsync (fun x -> async2 { return x % 2 })
     |> Async2.RunSynchronously
   Assert.AreEqual([||], result)
@@ -4963,7 +4954,7 @@ let ``AsyncSeq2.cycle repeats elements indefinitely`` () =
 [<Fact>]
 let ``AsyncSeq2.cycle on empty sequence returns empty`` () =
   let result =
-    AsyncSeq2.cycle (AsyncSeq2.empty<int> ())
+    AsyncSeq2.cycle (AsyncSeq2.empty<int>)
     |> AsyncSeq2.toArrayAsync
     |> Async2.RunSynchronously
   Assert.AreEqual([||], result)
@@ -5033,7 +5024,7 @@ let ``AsyncSeq2.exists2 returns false when no matching pair exists`` () =
 [<Fact>]
 let ``AsyncSeq2.exists2 on empty sequences returns false`` () =
   let result =
-    AsyncSeq2.exists2 (=) (AsyncSeq2.empty<int> ()) (AsyncSeq2.empty<int> ())
+    AsyncSeq2.exists2 (=) (AsyncSeq2.empty<int>) (AsyncSeq2.empty<int>)
     |> Async2.RunSynchronously
   Assert.IsFalse(result)
 
@@ -5085,7 +5076,7 @@ let ``AsyncSeq2.forall2 returns false when a pair fails`` () =
 [<Fact>]
 let ``AsyncSeq2.forall2 on empty sequences returns true`` () =
   let result =
-    AsyncSeq2.forall2 (=) (AsyncSeq2.empty<int> ()) (AsyncSeq2.empty<int> ())
+    AsyncSeq2.forall2 (=) (AsyncSeq2.empty<int>) (AsyncSeq2.empty<int>)
     |> Async2.RunSynchronously
   Assert.IsTrue(result)
 
@@ -5127,7 +5118,7 @@ let ``AsyncSeq2.tryFirst returns Some first element for non-empty sequence`` () 
 
 [<Fact>]
 let ``AsyncSeq2.tryFirst returns None for empty sequence`` () =
-  let result = AsyncSeq2.tryFirst ((AsyncSeq2.empty<int> ())) |> Async2.RunSynchronously
+  let result = AsyncSeq2.tryFirst ((AsyncSeq2.empty<int>)) |> Async2.RunSynchronously
   Assert.AreEqual(None, result)
 
 [<Fact>]
@@ -5137,7 +5128,7 @@ let ``AsyncSeq2.firstOrDefault returns first element when non-empty`` () =
 
 [<Fact>]
 let ``AsyncSeq2.firstOrDefault returns default when empty`` () =
-  let result = AsyncSeq2.firstOrDefault -1 ((AsyncSeq2.empty<int> ())) |> Async2.RunSynchronously
+  let result = AsyncSeq2.firstOrDefault -1 ((AsyncSeq2.empty<int>)) |> Async2.RunSynchronously
   Assert.AreEqual(-1, result)
 
 // ===== zipWithParallel =====
@@ -5186,7 +5177,7 @@ let ``AsyncSeq2.combineLatestWithAsync produces empty sequence when either sourc
   let result =
     AsyncSeq2.combineLatestWithAsync
       (fun a b -> async2 { return a + b })
-      ((AsyncSeq2.empty<int> ()))
+      ((AsyncSeq2.empty<int>))
       (AsyncSeq2.ofSeq [1;2;3])
     |> AsyncSeq2.toArrayAsync
     |> Async2.RunSynchronously
@@ -5214,6 +5205,6 @@ let ``AsyncSeq2.toObservable on empty sequence emits nothing`` () =
   let received = ResizeArray<int>()
   let completedEvent = new System.Threading.ManualResetEventSlim(false)
   let observer = TestObserver<int>(received.Add, completedEvent.Set)
-  use _sub = (AsyncSeq2.toObservable ((AsyncSeq2.empty<int> ()))).Subscribe(observer)
+  use _sub = (AsyncSeq2.toObservable ((AsyncSeq2.empty<int>))).Subscribe(observer)
   Assert.IsTrue(completedEvent.Wait(2000))
   Assert.AreEqual([||], received.ToArray())

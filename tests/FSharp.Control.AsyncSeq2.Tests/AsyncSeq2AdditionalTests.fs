@@ -15,7 +15,7 @@ let private drain source = AsyncSeq2.toArray source |> run
 let ``cycle repeats values but stays empty for an empty source`` () =
     let values = AsyncSeq2.cycle (AsyncSeq2.ofSeq [ 1; 2 ]) |> AsyncSeq2.take 5
     Assert.Equal<int>([| 1; 2; 1; 2; 1 |], drain values)
-    Assert.Empty(drain (AsyncSeq2.cycle (AsyncSeq2.empty<int> ())))
+    Assert.Empty(drain (AsyncSeq2.cycle (AsyncSeq2.empty<int>)))
 
 [<Fact>]
 let ``rev and splitInto enumerate once and retain balanced order`` () =
@@ -296,7 +296,7 @@ let ``parallel map preserves order and honors its concurrency limit`` () = task 
     Assert.Equal<int>([| 10; 20; 30 |], values)
     Assert.Equal(2, peak)
     Assert.Equal(0, active)
-    Assert.Throws<ArgumentException>(fun () -> AsyncSeq2.mapAsyncParallelThrottled 0 mapping (AsyncSeq2.empty ()) |> ignore) |> ignore
+    Assert.Throws<ArgumentException>(fun () -> AsyncSeq2.mapAsyncParallelThrottled 0 mapping (AsyncSeq2.empty) |> ignore) |> ignore
 }
 
 [<Fact>]
@@ -351,7 +351,7 @@ let ``time and count buffers flush trailing values`` () =
     Assert.Equal(2, buffered.Length)
     Assert.Equal<int>([| 1; 2 |], buffered[0])
     Assert.Equal<int>([| 3 |], buffered[1])
-    Assert.Empty(drain (AsyncSeq2.bufferByTime 5 (AsyncSeq2.empty<int> ())))
+    Assert.Empty(drain (AsyncSeq2.bufferByTime 5 (AsyncSeq2.empty<int>)))
     Assert.Throws<ArgumentException>(fun () -> AsyncSeq2.bufferByTime 0 source |> ignore) |> ignore
 
 [<Fact>]
@@ -547,8 +547,8 @@ let ``async terminal aggregates run callbacks directly with the ambient token`` 
         |> execute
     Assert.Equal<int>([| 1; 3; 6 |], mapped)
     Assert.Equal(6, finalState)
-    Assert.Throws<ArgumentException>(fun () ->
-        AsyncSeq2.reduceAsync folder (AsyncSeq2.empty<int> ()) |> execute |> ignore) |> ignore
+    Assert.Throws<InvalidOperationException>(fun () ->
+        AsyncSeq2.reduceAsync folder (AsyncSeq2.empty<int>) |> execute |> ignore) |> ignore
 
 [<Fact>]
 let ``async terminal grouping and comparison retain ordering`` () =
@@ -746,3 +746,55 @@ let ``blocking sequence cancels on early disposal but not completion`` () =
     Assert.Equal(0, cancellations)
     Assert.Equal<int>([| 1 |], AsyncSeq2.toBlockingSeq source |> Seq.take 1 |> Seq.toArray)
     Assert.Equal(1, cancellations)
+
+[<Fact>]
+let ``prefetch keeps at most one element waiting for a slow consumer`` () =
+    let mutable produced = 0
+    let source = asyncSeq2 {
+        for i in 1 .. 100 do
+            produced <- i
+            yield i
+    }
+    let consumed = ResizeArray()
+    async2 {
+        for value in AsyncSeq2.prefetch source do
+            do! Async2.Sleep 5
+            // One element buffered plus one being written: the producer never runs further ahead.
+            Assert.True(produced <= value + 2, $"produced {produced} while consuming {value}")
+            consumed.Add value
+    }
+    |> Async2.RunSynchronously
+    Assert.Equal<int>([| 1 .. 100 |], consumed.ToArray())
+
+[<Fact>]
+let ``prefetch propagates source failures`` () =
+    let failure = InvalidOperationException("source failed")
+    let source = asyncSeq2 {
+        yield 1
+        raise failure
+    }
+    let actual =
+        Assert.Throws<InvalidOperationException>(fun () ->
+            AsyncSeq2.prefetch source |> AsyncSeq2.toArray |> Async2.RunSynchronously |> ignore)
+    Assert.Same(failure, actual)
+
+[<Fact>]
+let ``asyncSeq2 binds F# Async computations with the enumeration token`` () =
+    use cts = new CancellationTokenSource()
+    let values = asyncSeq2 {
+        let! ct = Async.CancellationToken
+        let! value = async { return 42 }
+        yield value
+        yield (if ct = cts.Token then 1 else 0)
+    }
+    let enumerator = values.GetAsyncEnumerator cts.Token
+    let next () = enumerator.MoveNextAsync().AsTask().GetAwaiter().GetResult()
+    Assert.True(next ())
+    Assert.Equal(42, enumerator.Current)
+    Assert.True(next ())
+    Assert.Equal(1, enumerator.Current)
+
+[<Fact>]
+let ``AsyncSeq2.empty is a value`` () =
+    let empty: AsyncSeq2<int> = AsyncSeq2.empty
+    Assert.Empty(AsyncSeq2.toArray empty |> Async2.RunSynchronously)

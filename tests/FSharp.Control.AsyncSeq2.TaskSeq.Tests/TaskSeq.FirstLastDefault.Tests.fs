@@ -31,13 +31,13 @@ module EmptySeq =
 
     [<Fact>]
     let ``AsyncSeq2-firstOrDefault returns default with reference type`` () = task {
-        let! result = (AsyncSeq2.empty<string> ()) |> ColdTask.firstOrDefault "hello"
+        let! result = (AsyncSeq2.empty<string>) |> ColdTask.firstOrDefault "hello"
         result |> should equal "hello"
     }
 
     [<Fact>]
     let ``AsyncSeq2-lastOrDefault returns default with reference type`` () = task {
-        let! result = (AsyncSeq2.empty<string> ()) |> ColdTask.lastOrDefault "world"
+        let! result = (AsyncSeq2.empty<string>) |> ColdTask.lastOrDefault "world"
         result |> should equal "world"
     }
 

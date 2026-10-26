@@ -12,8 +12,6 @@ type AsyncSeq2 private () =
     static member private CheckSource(source: AsyncSeq2<'T>) =
         if isNull source then nullArg (nameof source)
 
-    static member empty<'T> () : AsyncSeq2<'T> = asyncSeq2 { }
-
     static member singleton(value: 'T) : AsyncSeq2<'T> = asyncSeq2 { yield value }
 
     static member ofSeq(source: seq<'T>) : AsyncSeq2<'T> =
@@ -105,3 +103,9 @@ type AsyncSeq2 private () =
                 count <- count + 1
             return count
         }
+
+[<AutoOpen>]
+module AsyncSeq2Values =
+    [<RequireQualifiedAccess>]
+    module AsyncSeq2 =
+        let empty<'T> : AsyncSeq2<'T> = asyncSeq2 { }

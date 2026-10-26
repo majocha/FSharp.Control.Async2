@@ -213,7 +213,7 @@ module Channel =
     [<Fact>]
     let ``AsyncSeq2-toChannelAsync with empty source completes the channel`` () = task {
         let ch = Channel.CreateUnbounded<int>()
-        do! ColdTask.toChannelAsync ch.Writer (AsyncSeq2.empty ())
+        do! ColdTask.toChannelAsync ch.Writer (AsyncSeq2.empty)
         ch.Reader.Completion.IsCompleted |> should be True
         let! results = AsyncSeq2.ofChannel ch.Reader |> ColdTask.toArrayAsync
         results |> should be Empty

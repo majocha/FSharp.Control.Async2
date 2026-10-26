@@ -198,7 +198,7 @@ module AsyncSeq2ConcurrentOperations =
         static member mergeAll(sources: seq<AsyncSeq2<'T>>) : AsyncSeq2<'T> =
             AsyncSeq2Internal.checkNonNull (nameof sources) sources
             AsyncSeq2.delay (fun () ->
-                sources |> Seq.fold AsyncSeq2.merge (AsyncSeq2.empty ()))
+                sources |> Seq.fold AsyncSeq2.merge (AsyncSeq2.empty))
 
         static member combineLatestWithAsync(combine: 'T -> 'U -> Async2<'V>) (first: AsyncSeq2<'T>) (second: AsyncSeq2<'U>) : AsyncSeq2<'V> =
             AsyncSeq2Internal.checkNonNull (nameof first) first
@@ -255,6 +255,36 @@ module AsyncSeq2ConcurrentOperations =
         static member bufferByTime(timeoutMs: int) (source: AsyncSeq2<'T>) : AsyncSeq2<'T[]> =
             AsyncSeq2.bufferByCountAndTime Int32.MaxValue timeoutMs source
 
+        /// Produces the next element while the consumer handles the current one. At most one element waits in
+        /// the buffer, so a fast producer cannot run ahead of a slow consumer (AsyncSeq's prefetch is bounded too).
         static member prefetch(source: AsyncSeq2<'T>) : AsyncSeq2<'T> =
             AsyncSeq2Internal.checkNonNull (nameof source) source
-            AsyncSeq2.merge (AsyncSeq2.empty ()) source
+            asyncSeq2 {
+                let! ct = CurrentCancellationToken
+                use linked = CancellationTokenSource.CreateLinkedTokenSource(ct)
+                let token = linked.Token
+                let channel = Channel.CreateBounded<'T>(BoundedChannelOptions(1, SingleReader = true, SingleWriter = true))
+
+                let produce = runtimeTask {
+                    try
+                        use enumerator = source.GetAsyncEnumerator(token)
+                        let mutable running = true
+                        while running do
+                            let! next = enumerator.MoveNextAsync()
+                            if next then
+                                do! channel.Writer.WriteAsync(enumerator.Current, token)
+                            else
+                                running <- false
+                        channel.Writer.TryComplete() |> ignore
+                    with
+                    | :? OperationCanceledException when token.IsCancellationRequested -> channel.Writer.TryComplete() |> ignore
+                    | error -> channel.Writer.TryComplete(error) |> ignore
+                }
+
+                try
+                    for value in channel.Reader.ReadAllAsync(ct) do
+                        yield value
+                finally
+                    linked.Cancel()
+                    AsyncHelpers.Await(produce)
+            }

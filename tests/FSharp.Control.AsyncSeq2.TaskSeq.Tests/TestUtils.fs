@@ -417,7 +417,7 @@ module TestUtils =
         /// Please extend this with more cases.
         let getEmptyVariant variant : IAsyncEnumerable<int> =
             match variant with
-            | EmptyVariant.CallEmpty -> (AsyncSeq2.empty ())
+            | EmptyVariant.CallEmpty -> (AsyncSeq2.empty)
             | EmptyVariant.Do -> asyncSeq2 { do ignore () }
             | EmptyVariant.DoBang -> asyncSeq2 { do! runtimeTask { return () } }
             | EmptyVariant.YieldBang -> asyncSeq2 { yield! Seq.empty<int> }
@@ -442,7 +442,7 @@ module TestUtils =
                     do! longDelay ()
                 }
 
-                yield! (AsyncSeq2.empty ())
+                yield! (AsyncSeq2.empty)
 
                 yield! asyncSeq2 {
                     do! microDelay ()

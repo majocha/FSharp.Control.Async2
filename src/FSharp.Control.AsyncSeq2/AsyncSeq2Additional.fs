@@ -490,7 +490,7 @@ module AsyncSeq2AdditionalOperations =
         static member interleaveMany(sources: seq<AsyncSeq2<'T>>) : AsyncSeq2<'T> =
             Internal.checkNonNull (nameof sources) sources
             AsyncSeq2.delay (fun () ->
-                sources |> Seq.fold AsyncSeq2.interleave (AsyncSeq2.empty ()))
+                sources |> Seq.fold AsyncSeq2.interleave (AsyncSeq2.empty))
 
         static member toChannel(writer: ChannelWriter<'T>) (source: AsyncSeq2<'T>) : Async2<unit> =
             Internal.checkNonNull (nameof writer) writer
