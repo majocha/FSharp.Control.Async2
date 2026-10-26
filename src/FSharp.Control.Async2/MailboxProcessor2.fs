@@ -10,21 +10,22 @@ open System.Threading.Tasks
 type AsyncReplyChannel2<'Reply>(reply: 'Reply -> unit) =
     member _.Reply(value: 'Reply) = reply value
 
-[<Sealed>]
-type private MailboxProcessor2Reply<'Reply>() =
-    let tcs = new TaskCompletionSource<'Reply>(TaskCreationOptions.RunContinuationsAsynchronously)
+module private MailboxProcessor2Reply =
+    /// A reply channel and the task its first reply completes. Continuations run asynchronously, so the
+    /// waiting caller never resumes inside the agent's `Reply` call.
+    let create () =
+        let completion = TaskCompletionSource<'Reply>(TaskCreationOptions.RunContinuationsAsynchronously)
+        AsyncReplyChannel2(fun reply -> completion.TrySetResult reply |> ignore), completion.Task
 
-    member this.Task = tcs.Task
-
-    member _.Reply(value: 'Reply) = tcs.TrySetResult value |> ignore
-
+/// The message store. `arrivals` receives posts; `inbox` keeps messages a scan skipped, in order.
+/// Both are guarded by `gate`, so `Dispose` and `CurrentQueueLength` are safe from any thread.
+/// Only one reader may wait at a time.
 [<Sealed>]
 type private MailboxProcessor2Queue<'Msg>(cancellationSupported: bool, isThrowExceptionAfterDisposed: bool) =
     let gate = obj ()
     let arrivals = Queue<'Msg>()
     let inbox = ResizeArray<'Msg>(1)
-    let mutable reader: TaskCompletionSource<bool> option = None
-    let mutable pulse: AutoResetEvent option = None
+    let mutable reader: TaskCompletionSource<bool> voption = ValueNone
     let mutable disposed = false
 
     member _.Count =
@@ -38,158 +39,149 @@ type private MailboxProcessor2Queue<'Msg>(cancellationSupported: bool, isThrowEx
             else
                 arrivals.Enqueue message
 
-            match reader with
-            | Some waiting ->
-                reader <- None
-                waiting.TrySetResult(true) |> ignore
-            | None ->
-                match pulse with
-                | Some event -> event.Set() |> ignore
-                | None -> ())
+                match reader with
+                | ValueSome waiting ->
+                    reader <- ValueNone
+                    // Runs the reader's continuation asynchronously, never under the gate.
+                    waiting.TrySetResult true |> ignore
+                | ValueNone -> ())
 
-    member private _.TakeInbox() =
-        if inbox.Count = 0 then
-            None
-        else
-            let message = inbox.[0]
-            inbox.RemoveAt 0
-            Some message
-
-    member private _.TakeArrival() =
+    /// Takes the oldest skipped message, or else the oldest arrival.
+    member private _.TryTake() =
         lock gate (fun () ->
-            if arrivals.Count > 0 then
-                Some(arrivals.Dequeue())
+            if inbox.Count > 0 then
+                let message = inbox[0]
+                inbox.RemoveAt 0
+                ValueSome message
             else
-                None)
+                match arrivals.TryDequeue() with
+                | true, message -> ValueSome message
+                | _ -> ValueNone)
 
     member private _.ScanInbox(scanner: 'Msg -> Async2<'T> option) =
-        let rec scan index =
-            if index >= inbox.Count then
-                None
-            else
-                match scanner inbox.[index] with
-                | None -> scan (index + 1)
-                | Some computation ->
-                    inbox.RemoveAt index
-                    Some computation
+        lock gate (fun () ->
+            let rec scan index =
+                if index >= inbox.Count then
+                    ValueNone
+                else
+                    match scanner inbox[index] with
+                    | None -> scan (index + 1)
+                    | Some computation ->
+                        inbox.RemoveAt index
+                        ValueSome computation
 
-        scan 0
+            scan 0)
 
+    /// Scans new arrivals once each, moving the ones the scanner skips to the inbox.
     member private _.ScanArrivals(scanner: 'Msg -> Async2<'T> option) =
         lock gate (fun () ->
             let rec scan () =
-                if arrivals.Count = 0 then
-                    None
-                else
-                    let message = arrivals.Dequeue()
+                match arrivals.TryDequeue() with
+                | false, _ -> ValueNone
+                | true, message ->
                     match scanner message with
                     | None ->
                         inbox.Add message
                         scan ()
-                    | Some computation -> Some computation
+                    | Some computation -> ValueSome computation
 
             scan ())
 
     member private _.AwaitArrival() =
         lock gate (fun () ->
-            match reader with
-            | Some _ -> failwith "multiple waiting reader continuations for mailbox"
-            | None when arrivals.Count > 0 -> Task.FromResult true
-            | None ->
+            if reader.IsSome then
+                failwith "multiple waiting reader continuations for mailbox"
+            elif arrivals.Count > 0 then
+                Task.FromResult true
+            else
                 let waiting = TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously)
-                reader <- Some waiting
+                reader <- ValueSome waiting
                 waiting.Task)
 
-    member private this.Wait(timeout: int) : Async2<bool> =
-        if timeout < 0 && not cancellationSupported then
-            async2 { return! this.AwaitArrival() }
-        else
-            async2 {
-                let ready, event =
-                    lock gate (fun () ->
-                        let event =
-                            match pulse with
-                            | Some event -> event
-                            | None ->
-                                let event = new AutoResetEvent(false)
-                                pulse <- Some event
-                                event
+    member private _.ClearReader(waiting: Task<bool>) =
+        lock gate (fun () ->
+            match reader with
+            | ValueSome pending when obj.ReferenceEquals(pending.Task, waiting) -> reader <- ValueNone
+            | _ -> ())
 
-                        arrivals.Count > 0, event)
-
-                if ready then
-                    return true
-                else
-                    return! Async2.AwaitWaitHandle(event, millisecondsTimeout = timeout)
-            }
-
-    member private this.WaitForScan(deadline: CancellationToken) : Async2<bool> =
+    /// True when a message may have arrived, false when `timeout` passes first. An expired or canceled
+    /// wait unregisters itself, so it cannot take the signal meant for a later wait.
+    member private this.WaitForArrival(timeout: TimeSpan, observeCancellation: bool) : Async2<bool> =
         async2 {
             let! ct = CurrentCancellationToken
             let waiting = this.AwaitArrival()
+
             try
                 try
-                    return! waiting.WaitAsync(deadline)
-                with :? OperationCanceledException ->
-                    ct.ThrowIfCancellationRequested()
+                    return! waiting.WaitAsync(timeout, (if observeCancellation then ct else CancellationToken.None))
+                with :? TimeoutException ->
                     return false
             finally
-                lock gate (fun () ->
-                    match reader with
-                    | Some pending when obj.ReferenceEquals(pending.Task, waiting) -> reader <- None
-                    | _ -> ())
+                this.ClearReader waiting
         }
 
-    member this.TryReceive(timeout: int) : Async2<'Msg option> =
+    /// Like FSharp.Core, an infinite wait observes cancellation only when the mailbox was given a token.
+    member private this.WaitForArrival(timeout: int) =
+        if timeout < 0 && not cancellationSupported then
+            this.WaitForArrival(Timeout.InfiniteTimeSpan, false)
+        else
+            this.WaitForArrival(TimeSpan.FromMilliseconds(float timeout), true)
+
+    member private this.ReceiveCore(timeout: int) : Async2<'Msg voption> =
         let rec receive () =
             async2 {
-                match this.TakeArrival() with
-                | Some message -> return Some message
-                | None ->
-                    let! signaled = this.Wait timeout
+                match this.TryTake() with
+                | ValueSome message -> return ValueSome message
+                | ValueNone ->
+                    let! signaled = this.WaitForArrival timeout
                     if signaled then return! receive ()
-                    else return None
+                    else return ValueNone
             }
 
+        receive ()
+
+    member this.TryReceive(timeout: int) : Async2<'Msg option> =
         async2 {
-            match this.TakeInbox() with
-            | Some message -> return Some message
-            | None -> return! receive ()
+            match! this.ReceiveCore timeout with
+            | ValueSome message -> return Some message
+            | ValueNone -> return None
         }
 
     member this.Receive(timeout: int) : Async2<'Msg> =
         async2 {
-            match! this.TryReceive timeout with
-            | Some message -> return message
-            | None -> return raise (TimeoutException("The mailbox receive operation timed out."))
+            match! this.ReceiveCore timeout with
+            | ValueSome message -> return message
+            | ValueNone -> return raise (TimeoutException("The mailbox receive operation timed out."))
         }
 
     member this.TryScan(scanner: 'Msg -> Async2<'T> option, timeout: int) : Async2<'T option> =
+        let rec scan (wait: unit -> Async2<bool>) =
+            async2 {
+                match this.ScanArrivals scanner with
+                | ValueSome computation ->
+                    let! value = computation
+                    return Some value
+                | ValueNone ->
+                    let! signaled = wait ()
+                    if signaled then return! scan wait
+                    else return None
+            }
+
         async2 {
             match this.ScanInbox scanner with
-            | Some computation ->
+            | ValueSome computation ->
                 let! value = computation
                 return Some value
-            | None ->
-                let rec scan (wait: unit -> Async2<bool>) =
-                    async2 {
-                        match this.ScanArrivals scanner with
-                        | Some computation ->
-                            let! value = computation
-                            return Some value
-                        | None ->
-                            let! signaled = wait ()
-                            if signaled then return! scan wait
-                            else return None
-                    }
+            | ValueNone ->
                 if timeout < 0 then
-                    return! scan (fun () -> this.Wait Timeout.Infinite)
+                    return! scan (fun () -> this.WaitForArrival Timeout.Infinite)
                 else
-                    let! ct = CurrentCancellationToken
-                    use deadline = CancellationTokenSource.CreateLinkedTokenSource(ct)
-                    if timeout = 0 then deadline.Cancel()
-                    else deadline.CancelAfter timeout
-                    return! scan (fun () -> this.WaitForScan deadline.Token)
+                    // One deadline for the whole scan: unmatched arrivals do not restart the timeout,
+                    // and it no longer applies once a computation is selected.
+                    let deadline = Environment.TickCount64 + int64 timeout
+                    return! scan (fun () ->
+                        let remaining = max 0L (deadline - Environment.TickCount64)
+                        this.WaitForArrival(TimeSpan.FromMilliseconds(float remaining), true))
         }
 
     member this.Scan(scanner: 'Msg -> Async2<'T> option, timeout: int) : Async2<'T> =
@@ -203,15 +195,10 @@ type private MailboxProcessor2Queue<'Msg>(cancellationSupported: bool, isThrowEx
         lock gate (fun () ->
             inbox.Clear()
             arrivals.Clear()
-            disposed <- true
-            match pulse with
-            | Some event ->
-                event.Dispose()
-                pulse <- None
-            | None -> ())
+            disposed <- true)
 
 #if DEBUG
-    member _.UnsafeContents = (inbox, arrivals, Option.toObj pulse, reader) |> box
+    member _.UnsafeContents = (inbox, arrivals, reader) |> box
 #endif
 
 [<Sealed; AutoSerializable(false); CompiledName("FSharpMailboxProcessor2`1")>]
@@ -260,25 +247,28 @@ type MailboxProcessor2<'Msg>
     member _.Scan(scanner: 'Msg -> Async2<'T> option, ?timeout: int) : Async2<'T> =
         mailbox.Scan(scanner, defaultArg timeout defaultTimeout)
 
+    member private this.PostWithReply(buildMessage: AsyncReplyChannel2<'Reply> -> 'Msg) =
+        let channel, reply = MailboxProcessor2Reply.create ()
+        this.Post(buildMessage channel)
+        reply
+
     member this.PostAndTryAsyncReply
         (buildMessage: AsyncReplyChannel2<'Reply> -> 'Msg, ?timeout: int)
         : Async2<'Reply option> =
         let timeout = defaultArg timeout defaultTimeout
-        let result = new MailboxProcessor2Reply<'Reply>()
-        this.Post(buildMessage (AsyncReplyChannel2(result.Reply)))
+        let reply = this.PostWithReply buildMessage
 
         if timeout = Timeout.Infinite && not cancellationSupported then
             async2 {
-                let! reply = result.Task
-                return Some reply
+                let! value = reply
+                return Some value
             }
         else
             async2 {
                 let! ct = CurrentCancellationToken
                 try
-                    let task = result.Task
-                    let! reply = task.WaitAsync(TimeSpan.FromMilliseconds(float timeout), ct)
-                    return Some reply
+                    let! value = reply.WaitAsync(TimeSpan.FromMilliseconds(float timeout), ct)
+                    return Some value
                 with :? TimeoutException ->
                     return None
             }
@@ -288,9 +278,7 @@ type MailboxProcessor2<'Msg>
         : Async2<'Reply> =
         let timeout = defaultArg timeout defaultTimeout
         if timeout = Timeout.Infinite && not cancellationSupported then
-            let result = new MailboxProcessor2Reply<'Reply>()
-            this.Post(buildMessage (AsyncReplyChannel2(result.Reply)))
-            Async2.Await result.Task
+            Async2.Await(this.PostWithReply buildMessage)
         else
             let reply = this.PostAndTryAsyncReply(buildMessage, timeout = timeout)
             async2 {
@@ -303,11 +291,10 @@ type MailboxProcessor2<'Msg>
         (buildMessage: AsyncReplyChannel2<'Reply> -> 'Msg, ?timeout: int)
         : 'Reply option =
         let timeout = defaultArg timeout defaultTimeout
-        let result = new MailboxProcessor2Reply<'Reply>()
-        this.Post(buildMessage (AsyncReplyChannel2(result.Reply)))
-        let task = result.Task
-        if task.IsCompleted || task.Wait(timeout) then
-            Some(task.GetAwaiter().GetResult())
+        let reply = this.PostWithReply buildMessage
+        // Checked first, like the original: an available reply is returned even for an invalid timeout.
+        if reply.IsCompleted || reply.Wait(timeout) then
+            Some reply.Result
         else
             None
 
