@@ -7,12 +7,25 @@
     <AssemblyName>FSharp.Control.Async2.Benchmarks</AssemblyName>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="Simulated.fs" />
+    <Compile Include="RequestPipeline.fs" />
+    <Compile Include="FanOut.fs" />
+    <Compile Include="Channels.fs" />
+    <Compile Include="Streams.fs" />
+    <Compile Include="Mailbox.fs" />
+    <Compile Include="Retry.fs" />
+    <Compile Include="Pagination.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="BenchmarkDotNet" Version="0.14.0" />
+    <!-- Keep the packages from bringing FSharp.Core in over the local runtime-async build. -->
+    <PackageReference Include="FSharp.Core" Version="[10.0.100]" ExcludeAssets="all" PrivateAssets="all" />
+    <PackageReference Include="FSharp.Control.AsyncSeq" Version="4.15.0" />
+    <PackageReference Include="FSharp.Control.TaskSeq" Version="1.1.1" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\FSharp.Control.Async2\FSharp.Control.Async2.fsproj" />
+    <ProjectReference Include="..\..\src\FSharp.Control.AsyncSeq2\FSharp.Control.AsyncSeq2.fsproj" />
   </ItemGroup>
 </Project>

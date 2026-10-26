@@ -78,10 +78,28 @@ test files, each adjusted for the differences above.
 
 ## Benchmarks
 
-`benchmarks/FSharp.Control.Async2.Benchmarks` compares `async2` with `async`:
-eight workloads (recursion, cancellation, exceptions, `try/with` and
-`try/finally` at every level) at depths 16, 256 and 2048, awaiting
-`Task.Yield()` every 16 levels.
+`benchmarks/FSharp.Control.Async2.Benchmarks` has two kinds of benchmark.
+
+`RecursiveComputationBenchmarks` measures `async2` alone on eight workloads
+(recursion, cancellation, exceptions, `try/with` and `try/finally` at every
+level) at depths 16, 256 and 2048, awaiting `Task.Yield()` every 16 levels.
+
+The scenario benchmarks write one application workload three times, with
+`async` (the baseline), `async2` and `task`, each as it is usually written in
+that flavour. Remote calls are `Task`s that resume on the thread pool, and
+cache hits are synchronously completed `ValueTask`s.
+
+| Benchmark | Workload |
+| --- | --- |
+| `RequestPipeline` | A Giraffe-style middleware stack (`try/with`, `try/finally`, auth) over a read-through cache, at 100%, 90% and 0% cache hits |
+| `ScatterGather` | One page calling 4 or 32 services at once (`Parallel` / `Task.WhenAll`) |
+| `ThrottledUpload` | 256 uploads, at most 8 in flight (`maxDegreeOfParallelism` / `Parallel.ForEachAsync`) |
+| `TreeCrawl` | Recursive parallel crawl of a folder tree of fan-out 4 |
+| `ChannelPipeline` | Three concurrent stages over bounded `System.Threading.Channels` of capacity 1 and 100 |
+| `StreamParsing` | Counting lines of a 1 MB log read from a socket-like stream in 4 KB reads |
+| `Mailbox` | A metrics agent: a burst of posts, and sequential request/reply (`MailboxProcessor`, `MailboxProcessor2`, a channel-based task agent) |
+| `Retry` | A retry policy around an upstream that times out 0 or 2 times per call |
+| `Pagination` | A paginated API as an async sequence: filter, map through a cache, fold (AsyncSeq, AsyncSeq2, TaskSeq) |
 
 ```sh
 dotnet run -c Release --project benchmarks/FSharp.Control.Async2.Benchmarks/FSharp.Control.Async2.Benchmarks.fsproj
