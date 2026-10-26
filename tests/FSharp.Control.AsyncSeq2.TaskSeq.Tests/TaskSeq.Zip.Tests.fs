@@ -41,8 +41,9 @@ module Immutable =
         let combined = AsyncSeq2.zip one two
         let! combined = ColdTask.toArrayAsync combined
 
+        // Seq.forall rather than Array.forall: the inlined Array.forall recursion overflows in Debug builds.
         combined
-        |> Array.forall (fun (x, y) -> x = y)
+        |> Seq.forall (fun (x, y) -> x = y)
         |> should be True
 
         combined |> should be (haveLength 10)
@@ -58,8 +59,9 @@ module Immutable =
         let combined = AsyncSeq2.zip one two
         let! combined = ColdTask.toArrayAsync combined
 
+        // Seq.forall rather than Array.forall: the inlined Array.forall recursion overflows in Debug builds.
         combined
-        |> Array.forall (fun (x, y) -> x = y)
+        |> Seq.forall (fun (x, y) -> x = y)
         |> should be True
 
         combined |> should be (haveLength 10)
@@ -76,8 +78,9 @@ module SideEffects =
         let combined = AsyncSeq2.zip one two
         let! combined = ColdTask.toArrayAsync combined
 
+        // Seq.forall rather than Array.forall: the inlined Array.forall recursion overflows in Debug builds.
         combined
-        |> Array.forall (fun (x, y) -> x = y)
+        |> Seq.forall (fun (x, y) -> x = y)
         |> should be True
 
         combined |> should be (haveLength 10)
@@ -93,8 +96,9 @@ module SideEffects =
         let combined = AsyncSeq2.zip one two
         let! combined = ColdTask.toArrayAsync combined
 
+        // Seq.forall rather than Array.forall: the inlined Array.forall recursion overflows in Debug builds.
         combined
-        |> Array.forall (fun (x, y) -> x = y)
+        |> Seq.forall (fun (x, y) -> x = y)
         |> should be True
 
         combined |> should be (haveLength 10)
@@ -111,8 +115,9 @@ module Performance =
         let combined = AsyncSeq2.zip one two
         let! combined = ColdTask.toArrayAsync combined
 
+        // Seq.forall rather than Array.forall: the inlined Array.forall recursion overflows in Debug builds.
         combined
-        |> Array.forall (fun (x, y) -> x = y)
+        |> Seq.forall (fun (x, y) -> x = y)
         |> should be True
 
         combined |> should be (haveLength length)

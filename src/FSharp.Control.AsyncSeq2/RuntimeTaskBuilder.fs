@@ -100,14 +100,14 @@ module RuntimeAsyncBuilderAwaitableExtensionsMediumPriority =
 [<AutoOpen>]
 module RuntimeAsyncBuilderAwaitableExtensionsHighPriority =
     type RuntimeAsyncBuilder with
-        // Cannonical runtime async sources 
+        // Canonical runtime async sources
         member inline _.Source(task: Task<'T>) = Started(fun () -> task |> AsyncHelpers.Await)
         member inline _.Source(task: Task) = Started(fun () -> task |> AsyncHelpers.Await)
         member inline _.Source(task: ValueTask<'T>) = Started(fun () -> task |> AsyncHelpers.Await)
         member inline _.Source(task: ValueTask) = Started(fun () -> task |> AsyncHelpers.Await)
         // Bind also cold-start Async2 computations
         member inline _.Source(computation: Async2<'T>) =
-            Started(fun () -> computation.StartTrampolined CancellationToken.None |> AsyncHelpers.Await)
+            Started(fun () -> computation.StartTrampolined CancellationToken.None |> ExceptionCache.await)
 
 [<AutoOpen>]
 module RuntimeTask =

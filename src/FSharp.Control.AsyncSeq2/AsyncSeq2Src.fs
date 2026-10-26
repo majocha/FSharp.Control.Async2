@@ -50,7 +50,7 @@ module AsyncSeq2Src =
     let toAsyncSeq (source: AsyncSeq2Src<'T>) : AsyncSeq2<'T> =
         let first = lock source.Gate (fun () -> source.Tail)
         asyncSeq2 {
-            let! token = Async2.CancellationToken
+            let! token = CurrentCancellationToken
             let mutable current = first
             let mutable reading = true
             while reading do

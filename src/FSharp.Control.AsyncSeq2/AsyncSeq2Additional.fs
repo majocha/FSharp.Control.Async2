@@ -40,7 +40,7 @@ module AsyncSeq2AdditionalOperations =
         static member fromChannel(reader: ChannelReader<'T>) : AsyncSeq2<'T> =
             Internal.checkNonNull (nameof reader) reader
             asyncSeq2 {
-                let! ct = Async2.CancellationToken
+                let! ct = CurrentCancellationToken
                 yield! reader.ReadAllAsync(ct)
             }
 
@@ -79,7 +79,7 @@ module AsyncSeq2AdditionalOperations =
         static member tryFirst(source: AsyncSeq2<'T>) : Async2<'T option> =
             Internal.checkNonNull (nameof source) source
             async2 {
-                let! ct = Async2.CancellationToken
+                let! ct = CurrentCancellationToken
                 use enumerator = source.GetAsyncEnumerator ct
                 let! hasNext = enumerator.MoveNextAsync()
                 return if hasNext then Some enumerator.Current else None
@@ -159,7 +159,7 @@ module AsyncSeq2AdditionalOperations =
             Internal.checkNonNull (nameof first) first
             Internal.checkNonNull (nameof second) second
             async2 {
-                let! ct = Async2.CancellationToken
+                let! ct = CurrentCancellationToken
                 use enumerator = (AsyncSeq2.zip first second).GetAsyncEnumerator ct
                 let mutable found = false
                 let mutable scanning = true
@@ -176,7 +176,7 @@ module AsyncSeq2AdditionalOperations =
             Internal.checkNonNull (nameof first) first
             Internal.checkNonNull (nameof second) second
             async2 {
-                let! ct = Async2.CancellationToken
+                let! ct = CurrentCancellationToken
                 use enumerator = (AsyncSeq2.zip first second).GetAsyncEnumerator ct
                 let mutable found = false
                 let mutable scanning = true
@@ -322,7 +322,7 @@ module AsyncSeq2AdditionalOperations =
             fun () -> async2 {
                 if finished then return None
                 else
-                    let! ct = Async2.CancellationToken
+                    let! ct = CurrentCancellationToken
                     let current =
                         match enumerator with
                         | Some value -> value
@@ -425,7 +425,7 @@ module AsyncSeq2AdditionalOperations =
             Internal.checkNonNull (nameof source) source
             async2 {
                 let results = ResizeArray<'U>()
-                let! ct = Async2.CancellationToken
+                let! ct = CurrentCancellationToken
                 use enumerator = source.GetAsyncEnumerator ct
                 let mutable complete = false
                 let mutable missing = false
@@ -445,7 +445,7 @@ module AsyncSeq2AdditionalOperations =
             Internal.checkNonNull (nameof source) source
             async2 {
                 let results = ResizeArray<'U>()
-                let! ct = Async2.CancellationToken
+                let! ct = CurrentCancellationToken
                 use enumerator = source.GetAsyncEnumerator ct
                 let mutable complete = false
                 let mutable failure = None
@@ -467,7 +467,7 @@ module AsyncSeq2AdditionalOperations =
             Internal.checkNonNull (nameof first) first
             Internal.checkNonNull (nameof second) second
             asyncSeq2 {
-                let! ct = Async2.CancellationToken
+                let! ct = CurrentCancellationToken
                 use left = first.GetAsyncEnumerator ct
                 use right = second.GetAsyncEnumerator ct
                 let mutable leftActive = true
@@ -496,7 +496,7 @@ module AsyncSeq2AdditionalOperations =
             Internal.checkNonNull (nameof writer) writer
             Internal.checkNonNull (nameof source) source
             async2 {
-                let! ct = Async2.CancellationToken
+                let! ct = CurrentCancellationToken
                 try
                     for value in source do
                         do! writer.WriteAsync(value, ct)
@@ -510,7 +510,7 @@ module AsyncSeq2AdditionalOperations =
             Internal.checkNonNull (nameof first) first
             Internal.checkNonNull (nameof second) second
             asyncSeq2 {
-                let! ct = Async2.CancellationToken
+                let! ct = CurrentCancellationToken
                 use left = first.GetAsyncEnumerator ct
                 use right = second.GetAsyncEnumerator ct
                 let mutable active = true

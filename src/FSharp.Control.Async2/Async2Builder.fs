@@ -43,36 +43,27 @@ module AwaitableHelpers =
 open AwaitableHelpers
 
 module ExceptionCache =
-    let store = ConditionalWeakTable<exn, ExceptionDispatchInfo>()
+    let private store = ConditionalWeakTable<exn, ExceptionDispatchInfo>()
 
-    let inline CaptureOrRetrieve (exn: exn) =
-        match store.TryGetValue exn with
-        | true, edi when edi.SourceException = exn -> edi
-        | _ ->
-            let edi = ExceptionDispatchInfo.Capture exn
+    let private capture =
+        ConditionalWeakTable<exn, ExceptionDispatchInfo>.CreateValueCallback(fun error -> ExceptionDispatchInfo.Capture error)
 
-            try
-                store.Add(exn, edi)
-            with _ ->
-                ()
-
-            edi
-
-    let inline Throw (exn: exn) =
-        let edi = CaptureOrRetrieve exn
-        edi.Throw()
+    /// Rethrows `error` with the dispatch info captured the first time it was seen, so a failure
+    /// propagating through many frames does not grow its stack trace at every frame.
+    let throwCached (error: exn) : 'T =
+        store.GetValue(error, capture).Throw()
         Unchecked.defaultof<_>
 
-    let inline Await (task: Task<'T>) =
+    let inline await (task: Task<'T>) =
         try
-            task |> AsyncHelpers.Await
-        with exn ->
-            Throw exn
+            AsyncHelpers.Await task
+        with error ->
+            throwCached error
 
 /// The state threaded through builder code: the cancellation token and, when the computation was
 /// started by a tail-call loop, the box a final `return!` hands its callee to. `'R` is the result type
 /// of the whole computation expression, so a final `return!` is known to produce exactly that type.
-[<Struct; NoEquality; NoComparison>]
+[<Struct; NoEquality; NoComparison; System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)>]
 type Async2Context<'R> = {
         CancellationToken: CancellationToken
         Tail: TailBox<'R> voption
@@ -81,147 +72,149 @@ type Async2Context<'R> = {
 and Async2Invocation<'R> = Async2Context<'R> -> Task<'R>
 
 /// Carries the next computation of a tail-call chain from a finished frame back to the loop that owns the chain.
-and [<Sealed; NoEquality; NoComparison>] TailBox<'R>() =
-    let mutable next = None
+and [<Sealed; NoEquality; NoComparison; System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)>] TailBox<'R>() =
+    let mutable next = ValueNone
 
-    member _.HasNext = next.IsSome
+    member _.Set(invocation: Async2Invocation<'R>) = next <- ValueSome invocation
 
-    member _.Set(start: Async2Invocation<'R>) = next <- Some start
-
-    member _.Take() =
-        let value = next.Value
-        next <- None
-        value
+    member _.TryTake() =
+        let taken = next
+        next <- ValueNone
+        taken
 
 module Async2Context =
     let create ct = { CancellationToken = ct; Tail = ValueNone }
 
 module internal Async2StartTrampoline =
-    [<AllowNullLiteral>]
-    type private State() =
-        let queue = Queue<unit -> unit>()
-        member _.Queue = queue
+
+    /// Nested starts run inline up to this depth. Besides keeping the starting stack shallow, the cap bounds the
+    /// chain of continuations that runs when those frames resume later, on a stack whose depth was never checked.
+    [<Literal>]
+    let private InlineDepthLimit = 128
+
+    /// Per-thread queue of deferred starts and completions. The thread that sets `IsRunning` owns the trampoline
+    /// and drains the queue before clearing it, so the queue is empty whenever nobody owns it.
+    /// Queued actions handle their own failures and never throw.
+    [<Sealed; AllowNullLiteral>]
+    type private Trampoline() =
+        [<ThreadStatic; DefaultValue>]
+        static val mutable private current: Trampoline
+
+        static member Current =
+            match Trampoline.current with
+            | null ->
+                let created = Trampoline()
+                Trampoline.current <- created
+                created
+            | existing -> existing
+
+        static member Exchange(next: Trampoline) =
+            let previous = Trampoline.current
+            Trampoline.current <- next
+            previous
+
+        member val Queue = Queue<unit -> unit>()
         member val IsRunning = false with get, set
         member val Depth = 0 with get, set
 
-    [<AbstractClass; Sealed>]
-    type private StateHolder =
-        [<ThreadStatic; DefaultValue>]
-        static val mutable private state: State
+        member this.CanRunInline =
+            this.Depth < InlineDepthLimit && RuntimeHelpers.TryEnsureSufficientExecutionStack()
 
-        static member Get() =
-            if isNull StateHolder.state then
-                StateHolder.state <- State()
-            StateHolder.state
+        /// Runs `action` as the owner of this trampoline, then drains everything queued meanwhile.
+        member inline this.RunAsOwner([<InlineIfLambda>] action: unit -> 'T) =
+            this.IsRunning <- true
 
-        static member Set(value) =
-            StateHolder.state <- value
+            try
+                action ()
+            finally
+                try
+                    while this.Queue.Count > 0 do
+                        this.Queue.Dequeue()()
+                finally
+                    this.IsRunning <- false
 
-    let private inlineDepthLimit = 128
-    let private stackCheckInterval = 16
+        member inline this.RunNested([<InlineIfLambda>] action: unit -> 'T) =
+            this.Depth <- this.Depth + 1
 
-    let private drain (current: State) =
-        while current.Queue.Count > 0 do
-            current.Queue.Dequeue()()
+            try
+                action ()
+            finally
+                this.Depth <- this.Depth - 1
+
+    /// A synchronous failure of a custom factory surfaces as a faulted task, like a failure inside builder code.
+    let inline private invoke (invocation: Async2Invocation<'T>) ctx =
+        try
+            invocation ctx
+        with error ->
+            Task.FromException<'T> error
 
     let private enqueueCompletion action =
-        let current = StateHolder.Get()
+        let trampoline = Trampoline.Current
 
-        if current.IsRunning then
-            current.Queue.Enqueue(action)
+        if trampoline.IsRunning then
+            trampoline.Queue.Enqueue action
         else
-            current.IsRunning <- true
+            trampoline.RunAsOwner action
 
+    let private runInContext = ContextCallback(fun state -> (state :?> unit -> unit) ())
+
+    /// Defers a start that is too deep to run inline. The returned task is completed from a drain loop and runs
+    /// its continuations synchronously there on purpose, so the awaiting parent resumes on a shallow stack.
+    let private enqueueStart (trampoline: Trampoline) (invocation: Async2Invocation<'T>) ctx =
+        let completion = TaskCompletionSource<'T>()
+
+        let run () =
             try
-                current.Queue.Enqueue(action)
-                drain current
-            finally
-                current.IsRunning <- false
+                let pending = trampoline.RunNested(fun () -> invoke invocation ctx)
 
-    type private QueuedStart<'T>(start: Async2Invocation<'T>, ct) =
-        let source = TaskCompletionSource<'T>()
+                if pending.IsCompleted then
+                    completion.TrySetFromTask pending |> ignore
+                else
+                    // Do not capture a scheduling context for this internal completion bridge.
+                    pending.ConfigureAwait(false).GetAwaiter().UnsafeOnCompleted(fun () ->
+                        enqueueCompletion (fun () -> completion.TrySetFromTask pending |> ignore))
+            with error ->
+                completion.TrySetException error |> ignore
 
-        // The queue is drained after the parent has returned or suspended, so the child must
-        // run in the execution context the parent had when it asked for the start.
-        let capturedContext = ExecutionContext.Capture()
+        // The queue is drained after the parent has returned or suspended, so the child must run
+        // in the execution context the parent had when it asked for the start.
+        match ExecutionContext.Capture() with
+        | null -> trampoline.Queue.Enqueue run
+        | context -> trampoline.Queue.Enqueue(fun () -> ExecutionContext.Run(context, runInContext, run))
 
-        let start () =
-            // Do not capture a scheduling context for this internal completion bridge.
-            let current = StateHolder.Get()
-            current.Depth <- current.Depth + 1
-            let pending =
-                try
-                    start ct
-                finally
-                    current.Depth <- current.Depth - 1
+        completion.Task
 
-            let awaiter = pending.ConfigureAwait(false).GetAwaiter()
-
-            let complete () =
-                try 
-                    let result = awaiter.GetResult()
-                    source.TrySetResult(result) |> ignore
-                with error -> 
-                    source.TrySetException(error) |> ignore
-
-            if awaiter.IsCompleted then
-                complete ()
-            else
-                awaiter.UnsafeOnCompleted(fun () -> enqueueCompletion complete)
-
-        let startProtected _ = try start () with error -> source.TrySetException(error) |> ignore
-
-        member this.Run() =
-            if isNull capturedContext then
-                startProtected ()
-            else
-                ExecutionContext.Run(capturedContext, startProtected, null)
-
-        member _.Task = source.Task
-
-    let start (start: Async2Invocation<'T>) (ct: CancellationToken) =
+    let start (invocation: Async2Invocation<'T>) ct =
         let ctx = Async2Context.create ct
+        let trampoline = Trampoline.Current
 
-        let current = StateHolder.Get()
-
-        if current.IsRunning then
-            // Runtime-async continuation frames can outgrow the trampoline's nested-start depth.
-            if
-                current.Depth < inlineDepthLimit
-                && (current.Depth % stackCheckInterval <> 0 || RuntimeHelpers.TryEnsureSufficientExecutionStack())
-            then
-                current.Depth <- current.Depth + 1
-                try
-                    try
-                        start ctx
-                    with error ->
-                        Task.FromException<'T>(error)
-                finally
-                    current.Depth <- current.Depth - 1
-            else
-                let completion = QueuedStart<'T>(start, ctx)
-
-                current.Queue.Enqueue(completion.Run)
-                completion.Task
+        if not trampoline.IsRunning then
+            trampoline.RunAsOwner(fun () -> invoke invocation ctx)
+        elif trampoline.CanRunInline then
+            trampoline.RunNested(fun () -> invoke invocation ctx)
         else
-            current.IsRunning <- true
+            enqueueStart trampoline invocation ctx
+
+    /// Starts as the owner of a trampoline, so the caller observes all synchronous progress
+    /// instead of having nested work deferred to an enclosing drain loop.
+    let startIsolated (invocation: Async2Invocation<'T>) ct =
+        let ctx = Async2Context.create ct
+        let trampoline = Trampoline.Current
+
+        if not trampoline.IsRunning then
+            trampoline.RunAsOwner(fun () -> invoke invocation ctx)
+        else
+            let previous = Trampoline.Exchange(Trampoline())
 
             try
-                start ctx
+                Trampoline.Current.RunAsOwner(fun () -> invoke invocation ctx)
             finally
-                try
-                    drain current
-                finally
-                    current.IsRunning <- false
+                Trampoline.Exchange previous |> ignore
 
-    let startIsolated<'T> (startComputation: Async2Invocation<'T>, ct) =
-        let previous = StateHolder.Get()
-        StateHolder.Set(State())
-
-        try
-            Async2Context.create ct |> startComputation
-        finally
-            StateHolder.Set(previous)
+/// Bound with `let!` in `async2` or `asyncSeq2` to read the token the computation was started with,
+/// without starting another computation the way `Async2.CancellationToken` does.
+[<Struct; NoEquality; NoComparison>]
+type CurrentCancellationToken = CurrentCancellationToken
 
 module Async2BuilderSources =
 
@@ -254,24 +247,20 @@ module Async2BuilderSources =
             struct (left, right |> AsyncHelpers.Await))
 
 [<Struct; NoEquality; NoComparison; CompiledName("FSharpAsync2`1")>]
-type Async2<'T> (start: Async2Invocation<'T>) =
+type Async2<'T> (invocation: Async2Invocation<'T>) =
 
-    member _.StartAsTask ct = Async2Context.create ct |> start
-
-    // Starts directly: the tail box must reach the callee's own frame, so this bypasses the trampoline queue.
+    /// Builder plumbing: starts a tail callee directly in the caller's frame, or hands it to a tail-call loop.
     [<System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)>]
-    member _.StartTail ctx = start ctx
-    [<System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)>]
-    member _.HandOff(tail: TailBox<'T>) = tail.Set start
+    member _.Invocation = invocation
 
     [<System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)>]
     // Keep trampoline internals out of runtime-async inline expansions.
     [<MethodImpl(MethodImplOptions.NoInlining)>]
     member _.StartTrampolined ct =
-        Async2StartTrampoline.start start ct
+        Async2StartTrampoline.start invocation ct
 
     member internal _.StartInIsolatedTrampoline ct =
-        Async2StartTrampoline.startIsolated (start, ct)
+        Async2StartTrampoline.startIsolated invocation ct
 
 /// Builder code: `'R` is the result type of the whole computation, `'T` the type of this piece.
 type Async2Code<'R, 'T> = Async2Context<'R> -> 'T
@@ -287,7 +276,7 @@ module Async2Builder =
         cancellationToken.ThrowIfCancellationRequested()
 
     let inline ofAsync2 (computation: Async2<'T>) =
-        Source(fun ct -> computation.StartTrampolined ct |> ExceptionCache.Await)
+        Source(fun ct -> computation.StartTrampolined ct |> ExceptionCache.await)
 
 open Async2Builder
 
@@ -376,31 +365,32 @@ type Async2Builder() =
     member inline _.Source(computation: Async2<'T>) = computation
 
     member inline _.ReturnFrom(computation: Async2<'T>) : Async2Code<_, 'T> =
-        fun ctx -> computation.StartTrampolined ctx.CancellationToken |> ExceptionCache.Await
+        fun ctx -> computation.StartTrampolined ctx.CancellationToken |> ExceptionCache.await
 
     member inline _.ReturnFromFinal(computation: Async2<'T>) : Async2Code<_, 'T> =
         fun ctx ->
             match ctx.Tail with
+            | ValueSome tail ->
+                // This frame was started by a tail-call loop: hand the callee over and let the frame finish.
+                tail.Set computation.Invocation
+                Unchecked.defaultof<_>
             | ValueNone ->
+                // Own the loop: run the callee in this frame, then each computation it hands over in turn.
                 let tail = TailBox()
                 let ctx = { ctx with Tail = ValueSome tail }
-                let mutable result = computation.StartTail ctx |> ExceptionCache.Await
+                let mutable result = Unchecked.defaultof<_>
+                let mutable next = ValueSome computation.Invocation
 
-                while tail.HasNext do
-                    let next = tail.Take()
-                    result <- next ctx |> ExceptionCache.Await
+                while next.IsSome do
+                    result <- next.Value ctx |> ExceptionCache.await
+                    next <- tail.TryTake()
 
                 result
-            | ValueSome tail ->
-                computation.HandOff tail
-                Unchecked.defaultof<_>
 
     member inline _.Bind(computation: Async2<'T>, [<InlineIfLambda>] continuation) : Async2Code<'R, 'U> =
         fun ctx ->
             check ctx.CancellationToken
-            let result =
-                computation.StartTrampolined ctx.CancellationToken
-                |> ExceptionCache.Await
+            let result = computation.StartTrampolined ctx.CancellationToken |> ExceptionCache.await
             continuation result ctx
 
     member inline _.MergeSources(left: Async2<'A>, [<InlineIfLambda>] right: Source<'B>) =
@@ -455,13 +445,15 @@ module Async2BuilderSourceExtensions =
         member inline _.Source(sequence: 'T seq) = sequence
         member inline _.Source(sequence: IAsyncEnumerable<'T>) = sequence
 
-        // Cannonical runtime async Bind sources
+        // Canonical runtime async Bind sources
         member inline _.Source(task: Task<'T>) = Source(fun _ -> task |> AsyncHelpers.Await)
         member inline _.Source(task: Task) = Source(fun _ -> task |> AsyncHelpers.Await)
         member inline _.Source(task: ValueTask<'T>) = Source(fun _ -> task |> AsyncHelpers.Await)
         member inline _.Source(task: ValueTask) = Source(fun _ -> task |> AsyncHelpers.Await)
 
-         //Cold start sources
+        member inline _.Source(_: CurrentCancellationToken) = Source(fun ct -> ct)
+
+        // Cold start sources
         member inline _.Source(computation: Async<'T>) =
             Source(fun ct -> Async.StartImmediateAsTask(computation, ct) |> AsyncHelpers.Await)
 

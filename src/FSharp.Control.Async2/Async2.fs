@@ -42,7 +42,7 @@ module internal Async2RuntimeHelpers =
         defaultArg token (getDefaultCancellationToken ())
 
     let startOnThreadPool cancellationToken (computation: Async2<_>) =
-        Task.Run<'T>(fun () -> computation.StartAsTask cancellationToken)
+        Task.Run<'T>(fun () -> computation.StartInIsolatedTrampoline cancellationToken)
 
     let startImmediate cancellationToken (computation: Async2<_>) =
         computation.StartInIsolatedTrampoline cancellationToken
@@ -123,12 +123,11 @@ type Async2 =
         =
         ignore taskCreationOptions
         let ct = getToken cancellationToken
-        //computation |> startImmediate ct
         computation |> startOnThreadPool ct
 
     static member StartChildAsTask(computation, ?taskCreationOptions) =
         async2 {
-            let! ct = cancellationTokenAsync
+            let! ct = CurrentCancellationToken
             return computation |> startImmediate ct
         }
 
@@ -145,7 +144,7 @@ type Async2 =
         (computation: Async2<'T>, compensation: OperationCanceledException -> unit)
         : Async2<'T> =
         async2 {
-            let! ct = Async2.CancellationToken
+            let! ct = CurrentCancellationToken
             try
                 return! computation
             with
@@ -156,7 +155,7 @@ type Async2 =
 
     static member OnCancel(interruption: unit -> unit) : Async2<IDisposable> =
         async2 {
-            let! ct = Async2.CancellationToken
+            let! ct = CurrentCancellationToken
             return ct.Register(Action interruption) :> IDisposable
         }
 
@@ -164,7 +163,7 @@ type Async2 =
         (computation: Async2<'T>, ?millisecondsTimeout: int)
         : Async2<Async2<'T>> =
             async2 {
-                let! ct = Async2.CancellationToken
+                let! ct = CurrentCancellationToken
                 let started = computation |> startOnThreadPool ct
                 return async2 {
                     return! started
@@ -181,7 +180,7 @@ type Async2 =
             invalidArg "maxDegreeOfParallelism" (sprintf "maxDegreeOfParallelism must be positive, was %d" maxDegreeOfParallelism)
 
         async2 {
-            let! ct = Async2.CancellationToken
+            let! ct = CurrentCancellationToken
             use cts = CancellationTokenSource.CreateLinkedTokenSource ct
             let innerToken = cts.Token
             let mutable firstFailure : ExceptionDispatchInfo option = None
@@ -205,7 +204,7 @@ type Async2 =
                                 cts.Cancel()
                         | _ -> ()
                     }
-                    Task.Run<unit>(fun () -> worker.StartAsTask innerToken))
+                    Task.Run<unit>(fun () -> worker.StartInIsolatedTrampoline innerToken))
 
             try
                 let! completed = Task.WhenAll workers
@@ -229,7 +228,7 @@ type Async2 =
     static member Choice(computations: seq<Async2<'T option>>) : Async2<'T option> =
         let computations = computations |> Seq.toArray
         async2 {
-            let! ct = Async2.CancellationToken
+            let! ct = CurrentCancellationToken
             use cts = CancellationTokenSource.CreateLinkedTokenSource ct
             let mutable result = None
             let mutable found = false
@@ -260,7 +259,7 @@ type Async2 =
 
     static member SwitchToNewThread() : Async2<unit> =
         async2 {
-            let! ct = Async2.CancellationToken
+            let! ct = CurrentCancellationToken
             do!
                 Task.Factory.StartNew(
                     Action(fun () -> ()),
@@ -272,7 +271,7 @@ type Async2 =
 
     static member SwitchToThreadPool() : Async2<unit> =
         async2 {
-            let! ct = Async2.CancellationToken
+            let! ct = CurrentCancellationToken
             do! Task.Run(Action(fun () -> ()), ct)
         }
 
@@ -301,7 +300,7 @@ type Async2 =
         (callback: ('T -> unit) * (exn -> unit) * (OperationCanceledException -> unit) -> unit)
         : Async2<'T> =
         async2 {
-            let! ct = Async2.CancellationToken
+            let! ct = CurrentCancellationToken
             let completion = TaskCompletionSource<'T>(TaskCreationOptions.RunContinuationsAsynchronously)
             let mutable completed = 0
 
@@ -356,32 +355,32 @@ type Async2 =
         async2 { return! task }
 
     static member StartTaskImmediate(createTask: CancellationToken -> Task<'T>) : Async2<'T> =
-        async2 { let! ct = Async2.CancellationToken in return! createTask ct }
+        async2 { let! ct = CurrentCancellationToken in return! createTask ct }
 
     static member StartTaskImmediate(createTask: CancellationToken -> Task) : Async2<unit> =
-        async2 { let! ct = Async2.CancellationToken in return! createTask ct }
+        async2 { let! ct = CurrentCancellationToken in return! createTask ct }
 
     static member StartTaskImmediate(createTask: CancellationToken -> ValueTask<'T>) : Async2<'T> =
-        async2 { let! ct = Async2.CancellationToken in return! createTask ct }
+        async2 { let! ct = CurrentCancellationToken in return! createTask ct }
 
     static member StartTaskImmediate(createTask: CancellationToken -> ValueTask) : Async2<unit> =
-        async2 { let! ct = Async2.CancellationToken in return! createTask ct }
+        async2 { let! ct = CurrentCancellationToken in return! createTask ct }
 
     static member Sleep(millisecondsDueTime: int) : Async2<unit> =
         async2 {
-            let! ct = Async2.CancellationToken
+            let! ct = CurrentCancellationToken
             return! Task.Delay(millisecondsDueTime, ct)
         }
 
     static member Sleep(dueTime: TimeSpan) : Async2<unit> =
         async2 {
-            let! ct = Async2.CancellationToken
+            let! ct = CurrentCancellationToken
             return! Task.Delay(dueTime, ct)
         }
 
     static member AwaitWaitHandle(waitHandle: WaitHandle, ?millisecondsTimeout: int) : Async2<bool> =
         async2 {
-            let! ct = Async2.CancellationToken
+            let! ct = CurrentCancellationToken
 
             let tcs = TaskCompletionSourceWithCancellation<bool>(ct)
 
@@ -601,5 +600,5 @@ module Async2 =
         : Async2<'T array> =
         Async2.Parallel(computations, maxDegreeOfParallelism = maxDegreeOfParallelism)
 
-    let parallelDoLimit maxDegreeOfParallelism computations =
-        sequentialDo (computations |> Seq.map (Async2.Ignore))
+    let parallelDoLimit maxDegreeOfParallelism (computations: seq<Async2<'T>>) : Async2<unit> =
+        parallelLimit maxDegreeOfParallelism computations |> Async2.Ignore

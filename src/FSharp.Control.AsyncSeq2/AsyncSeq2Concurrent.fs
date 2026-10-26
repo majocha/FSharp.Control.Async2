@@ -13,7 +13,7 @@ module AsyncSeq2ConcurrentOperations =
         AsyncSeq2Internal.checkNonNull (nameof source) source
         if parallelism < 1 then invalidArg (nameof parallelism) "Parallelism must be positive."
         asyncSeq2 {
-            let! ct = Async2.CancellationToken
+            let! ct = CurrentCancellationToken
             use linked = CancellationTokenSource.CreateLinkedTokenSource(ct)
             use throttle = new SemaphoreSlim(parallelism)
             let token = linked.Token
@@ -100,7 +100,7 @@ module AsyncSeq2ConcurrentOperations =
         static member takeUntilSignal(signal: Async2<unit>) (source: AsyncSeq2<'T>) : AsyncSeq2<'T> =
             AsyncSeq2Internal.checkNonNull (nameof source) source
             asyncSeq2 {
-                let! ct = Async2.CancellationToken
+                let! ct = CurrentCancellationToken
                 use linked = CancellationTokenSource.CreateLinkedTokenSource(ct)
                 use enumerator = source.GetAsyncEnumerator(linked.Token)
                 let stopped = Async2.StartAsTask(signal, cancellationToken = linked.Token)
@@ -136,7 +136,7 @@ module AsyncSeq2ConcurrentOperations =
         static member skipUntilSignal(signal: Async2<unit>) (source: AsyncSeq2<'T>) : AsyncSeq2<'T> =
             AsyncSeq2Internal.checkNonNull (nameof source) source
             asyncSeq2 {
-                let! ct = Async2.CancellationToken
+                let! ct = CurrentCancellationToken
                 use linked = CancellationTokenSource.CreateLinkedTokenSource(ct)
                 let started = Async2.StartAsTask(signal, cancellationToken = linked.Token)
                 try
@@ -155,12 +155,16 @@ module AsyncSeq2ConcurrentOperations =
             AsyncSeq2Internal.checkNonNull (nameof first) first
             AsyncSeq2Internal.checkNonNull (nameof second) second
             asyncSeq2 {
-                let! ct = Async2.CancellationToken
+                let! ct = CurrentCancellationToken
                 use linked = CancellationTokenSource.CreateLinkedTokenSource(ct)
                 let token = linked.Token
                 let channel = Channel.CreateUnbounded<Choice<'T, 'U>>()
 
                 let produce (source: AsyncSeq2<'V>) wrap = runtimeTask {
+                    // Producers start synchronously, so nested merges (e.g. mergeAll) would recurse
+                    // one level per source; move to the thread pool when the stack runs low.
+                    if not (RuntimeHelpers.TryEnsureSufficientExecutionStack()) then
+                        do! Task.Yield()
                     try
                         use enumerator = source.GetAsyncEnumerator(token)
                         let mutable running = true

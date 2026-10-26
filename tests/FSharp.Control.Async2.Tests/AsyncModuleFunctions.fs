@@ -373,3 +373,18 @@ let ``Async2.parallelDoLimit runs all computations and returns unit`` () =
     |> Async2.parallelDoLimit 2
     |> Async2.RunSynchronouslyImmediate
     Assert.Equal(5, count)
+
+[<Fact>]
+let ``Async2.parallelDoLimit runs computations concurrently`` () =
+    // Each computation waits for the other, so this only completes when both run at the same time.
+    let first = TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)
+    let second = TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)
+    let meet (mine: TaskCompletionSource) (other: TaskCompletionSource) =
+        async2 {
+            mine.SetResult()
+            do! other.Task.WaitAsync(TimeSpan.FromSeconds 5.0)
+        }
+
+    [ meet first second; meet second first ]
+    |> Async2.parallelDoLimit 2
+    |> Async2.RunSynchronously

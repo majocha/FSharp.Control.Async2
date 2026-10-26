@@ -12,7 +12,7 @@ module AsyncSeq2ObservableOperations =
         static member ofObservableBuffered(source: IObservable<'T>) : AsyncSeq2<'T> =
             AsyncSeq2Internal.checkNonNull (nameof source) source
             asyncSeq2 {
-                let! ct = Async2.CancellationToken
+                let! ct = CurrentCancellationToken
                 let channel = Channel.CreateUnbounded<'T>()
                 use subscription =
                     source.Subscribe(

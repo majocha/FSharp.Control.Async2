@@ -280,7 +280,7 @@ module AsyncCompilerRegressionTests =
     let ``A failed start does not leave queued children pending`` () =
         let mutable firstChildTask: Task<int> = null
         let mutable secondChildTask: Task<int> = null
-        let mutable startError: exn option = None
+        let mutable parentTask: Task<int> = null
         let thread =
             Thread(ThreadStart(fun () ->
                 let parent =
@@ -289,14 +289,12 @@ module AsyncCompilerRegressionTests =
                         secondChildTask <- (async2 { return 43 }).StartTrampolined ctx.CancellationToken
                         raise (InvalidOperationException("parent start failed")))
 
-                try
-                    parent.StartTrampolined CancellationToken.None |> ignore
-                with error ->
-                    startError <- Some error))
+                parentTask <- parent.StartTrampolined CancellationToken.None))
 
         thread.Start()
         Assert.True(thread.Join(5000), "Parent start did not finish")
-        Assert.IsType<InvalidOperationException>(startError.Value) |> ignore
+        Assert.True(parentTask.IsFaulted, "A synchronous start failure should fault the returned task")
+        Assert.IsType<InvalidOperationException>(parentTask.Exception.InnerException) |> ignore
         Assert.NotNull(firstChildTask)
         Assert.NotNull(secondChildTask)
         Assert.True(firstChildTask.IsCompleted, "The first queued child was left pending after the parent failed")
@@ -531,3 +529,64 @@ module AsyncCompatibilityTests =
         Assert.ThrowsAny<OperationCanceledException>(fun () ->
             Async2.RunSynchronously(root, cancellationToken = cts.Token) |> ignore)
         |> ignore
+
+    [<Fact>]
+    let ``Tail call in a handler of a tail-called frame runs in constant stack`` () =
+        let mutable attempts = 0
+        let rec retry remaining =
+            async2 {
+                try
+                    attempts <- attempts + 1
+                    if remaining > 0 then failwith "retry"
+                    return remaining
+                with _ when remaining > 0 ->
+                    return! retry (remaining - 1)
+            }
+        // `root` owns the tail loop, so every `retry` frame runs with a tail box.
+        let root = async2 { return! retry 100_000 }
+        Assert.Equal(0, Async2.RunSynchronously root)
+        Assert.Equal(100_001, attempts)
+
+    [<Fact>]
+    let ``Tail call inside try-finally of a tail-called frame runs finally after the callee`` () =
+        let log = System.Collections.Generic.List<string>()
+        let leaf = async2 {
+            log.Add "leaf"
+            return 1
+        }
+        let middle = async2 {
+            try
+                return! leaf
+            finally
+                log.Add "finally"
+        }
+        let root = async2 { return! middle }
+        Assert.Equal(1, Async2.RunSynchronously root)
+        Assert.Equal<string list>([ "leaf"; "finally" ], List.ofSeq log)
+
+    [<Fact>]
+    let ``Tail call inside use of a tail-called frame disposes after the callee`` () =
+        let log = System.Collections.Generic.List<string>()
+        let leaf = async2 {
+            log.Add "leaf"
+            return 1
+        }
+        let middle = async2 {
+            use _ = { new IDisposable with member _.Dispose() = log.Add "dispose" }
+            return! leaf
+        }
+        let root = async2 { return! middle }
+        Assert.Equal(1, Async2.RunSynchronously root)
+        Assert.Equal<string list>([ "leaf"; "dispose" ], List.ofSeq log)
+
+    [<Fact>]
+    let ``CurrentCancellationToken reads the start token`` () =
+        use cts = new CancellationTokenSource()
+        let computation = async2 {
+            let! ct = CurrentCancellationToken
+            let! viaAsync2 = Async2.CancellationToken
+            return ct, viaAsync2
+        }
+        let ct, viaAsync2 = Async2.RunSynchronously(computation, cancellationToken = cts.Token)
+        Assert.Equal(cts.Token, ct)
+        Assert.Equal(cts.Token, viaAsync2)

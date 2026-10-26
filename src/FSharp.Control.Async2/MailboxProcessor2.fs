@@ -125,7 +125,7 @@ type private MailboxProcessor2Queue<'Msg>(cancellationSupported: bool, isThrowEx
 
     member private this.WaitForScan(deadline: CancellationToken) : Async2<bool> =
         async2 {
-            let! ct = Async2.CancellationToken
+            let! ct = CurrentCancellationToken
             let waiting = this.AwaitArrival()
             try
                 try
@@ -185,7 +185,7 @@ type private MailboxProcessor2Queue<'Msg>(cancellationSupported: bool, isThrowEx
                 if timeout < 0 then
                     return! scan (fun () -> this.Wait Timeout.Infinite)
                 else
-                    let! ct = Async2.CancellationToken
+                    let! ct = CurrentCancellationToken
                     use deadline = CancellationTokenSource.CreateLinkedTokenSource(ct)
                     if timeout = 0 then deadline.Cancel()
                     else deadline.CancelAfter timeout
@@ -274,7 +274,7 @@ type MailboxProcessor2<'Msg>
             }
         else
             async2 {
-                let! ct = Async2.CancellationToken
+                let! ct = CurrentCancellationToken
                 try
                     let task = result.Task
                     let! reply = task.WaitAsync(TimeSpan.FromMilliseconds(float timeout), ct)

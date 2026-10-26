@@ -328,8 +328,9 @@ module AsyncSeq2BuilderSourceExtensionsMediumPriority =
         member inline _.Source(task: #Task<_>) =
             Async2BuilderSources.ofAwaitable task
 
-        member inline _.Source(computation: Async2<'T>) =
-            Async2BuilderSources.Source(fun ct -> computation.StartTrampolined ct |> AsyncHelpers.Await)
+        member inline _.Source(computation: Async2<'T>) = Async2Builder.ofAsync2 computation
+
+        member inline _.Source(_: CurrentCancellationToken) = Async2BuilderSources.Source(fun ct -> ct)
 
         member inline _.Source(source: seq<'T>) = source
         member inline _.Source(source: IAsyncEnumerable<'T>) = source

@@ -355,3 +355,14 @@ let ``try with handles faults and finally runs`` () =
 let ``null sources are rejected`` () =
     Assert.Throws<ArgumentNullException>(fun () -> AsyncSeq2.toArray null |> ignore) |> ignore
     Assert.Throws<ArgumentNullException>(fun () -> AsyncSeq2.map id null |> ignore) |> ignore
+
+[<Fact>]
+let ``CurrentCancellationToken reads the enumeration token`` () =
+    use cts = new CancellationTokenSource()
+    let tokens = asyncSeq2 {
+        let! ct = CurrentCancellationToken
+        yield ct
+    }
+    let enumerator = tokens.GetAsyncEnumerator cts.Token
+    Assert.True(enumerator.MoveNextAsync().AsTask().GetAwaiter().GetResult())
+    Assert.Equal(cts.Token, enumerator.Current)

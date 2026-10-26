@@ -193,7 +193,7 @@ module AsyncSeq2OperationExtensions =
             Internal.checkNonNull (nameof source) source
 
             async2 {
-                let! ct = Async2.CancellationToken
+                let! ct = CurrentCancellationToken
                 try
                     for value in source do
                         do! writer.WriteAsync(value, ct)
@@ -256,7 +256,7 @@ module AsyncSeq2OperationExtensions =
             Internal.checkNonNull (nameof reader) reader
 
             asyncSeq2 {
-                let! ct = Async2.CancellationToken
+                let! ct = CurrentCancellationToken
                 yield! reader.ReadAllAsync(ct)
             }
 
@@ -433,7 +433,7 @@ module AsyncSeq2OperationExtensions =
         static member tryHead(source: AsyncSeq2<'T>) : Async2<'T option> =
             Internal.checkNonNull (nameof source) source
             async2 {
-                let! ct = Async2.CancellationToken
+                let! ct = CurrentCancellationToken
                 use enumerator = source.GetAsyncEnumerator ct
                 let! next = enumerator.MoveNextAsync()
                 return if next then Some enumerator.Current else None
@@ -541,7 +541,7 @@ module AsyncSeq2OperationExtensions =
         static member takeWhileAsync (predicate: 'T -> Async2<bool>) (source: AsyncSeq2<'T>) : AsyncSeq2<'T> =
             Internal.checkNonNull (nameof source) source
             asyncSeq2 {
-                let! ct = Async2.CancellationToken
+                let! ct = CurrentCancellationToken
                 use enumerator = source.GetAsyncEnumerator ct
                 let mutable taking = true
                 while taking do
@@ -557,7 +557,7 @@ module AsyncSeq2OperationExtensions =
         static member takeWhileInclusiveAsync (predicate: 'T -> Async2<bool>) (source: AsyncSeq2<'T>) : AsyncSeq2<'T> =
             Internal.checkNonNull (nameof source) source
             asyncSeq2 {
-                let! ct = Async2.CancellationToken
+                let! ct = CurrentCancellationToken
                 use enumerator = source.GetAsyncEnumerator ct
                 let mutable taking = true
                 while taking do
@@ -670,7 +670,7 @@ module AsyncSeq2OperationExtensions =
         static member exists predicate (source: AsyncSeq2<'T>) : Async2<bool> =
             Internal.checkNonNull (nameof source) source
             async2 {
-                let! ct = Async2.CancellationToken
+                let! ct = CurrentCancellationToken
                 use enumerator = source.GetAsyncEnumerator ct
                 let mutable found = false
                 let mutable reading = true
@@ -684,7 +684,7 @@ module AsyncSeq2OperationExtensions =
         static member existsAsync (predicate: 'T -> Async2<bool>) (source: AsyncSeq2<'T>) : Async2<bool> =
             Internal.checkNonNull (nameof source) source
             async2 {
-                let! ct = Async2.CancellationToken
+                let! ct = CurrentCancellationToken
                 use enumerator = source.GetAsyncEnumerator ct
                 let mutable found = false
                 let mutable reading = true
@@ -741,7 +741,7 @@ module AsyncSeq2OperationExtensions =
             AsyncSeq2Cold.binaryWithToken source1 source2 (fun _ -> Internal.compareWith comparer)
         static member compareWithAsync comparer source1 source2 =
             AsyncSeq2Cold.binaryAsync source1 source2 (fun first second -> async2 {
-                let! ct = Async2.CancellationToken
+                let! ct = CurrentCancellationToken
                 use left = first.GetAsyncEnumerator ct
                 use right = second.GetAsyncEnumerator ct
                 let mutable comparison = 0
@@ -771,7 +771,7 @@ module AsyncSeq2OperationExtensions =
 
         static member foldWhileAsync predicate folder state source =
             AsyncSeq2Cold.terminalAsync source (fun source -> async2 {
-                let! ct = Async2.CancellationToken
+                let! ct = CurrentCancellationToken
                 use e = source.GetAsyncEnumerator ct
                 let mutable result = state
                 let mutable running = true
@@ -801,7 +801,7 @@ module AsyncSeq2OperationExtensions =
         static member reduce folder source = AsyncSeq2Cold.terminal source (Internal.reduce (FolderAction folder))
         static member reduceAsync folder source =
             AsyncSeq2Cold.terminalAsync source (fun source -> async2 {
-                let! ct = Async2.CancellationToken
+                let! ct = CurrentCancellationToken
                 use e = source.GetAsyncEnumerator ct
                 let! first = e.MoveNextAsync()
                 if not first then Internal.raiseEmptySeq ()

@@ -91,7 +91,7 @@ type AsyncSeq2 private () =
     static member isEmpty(source: AsyncSeq2<'T>) : Async2<bool> =
         AsyncSeq2.CheckSource source
         async2 {
-            let! ct = Async2.CancellationToken
+            let! ct = CurrentCancellationToken
             use enumerator = source.GetAsyncEnumerator ct
             let! hasNext = enumerator.MoveNextAsync()
             return not hasNext
