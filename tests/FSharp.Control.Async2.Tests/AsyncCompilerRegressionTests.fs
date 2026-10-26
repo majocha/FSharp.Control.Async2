@@ -409,6 +409,51 @@ module AsyncCompatibilityTests =
         Assert.True(finished.IsSet, "Parallel finished before its started child unwound")
 
     [<Fact>]
+    let ``Parallel waits for children cancelled while it is still starting workers`` () =
+        // The first child cancels the parent while Parallel is still starting the other workers,
+        // before it has begun awaiting them.
+        for _ in 1 .. 20 do
+            use cts = new CancellationTokenSource()
+            let mutable unwinding = 0
+            let child = async2 {
+                Interlocked.Increment(&unwinding) |> ignore
+                try
+                    cts.Cancel()
+                    do! Async2.Sleep 10_000
+                finally
+                    Thread.Sleep 20
+                    Interlocked.Decrement(&unwinding) |> ignore
+            }
+            let computation = Async2.Parallel(Array.replicate 64 child)
+            let running = Async2.StartAsTask(computation, cancellationToken = cts.Token)
+
+            Assert.ThrowsAny<OperationCanceledException>(fun () -> running.GetAwaiter().GetResult() |> ignore)
+            |> ignore
+            Assert.Equal(0, Volatile.Read(&unwinding))
+
+    [<Fact>]
+    let ``Choice waits for children cancelled while it is still starting workers`` () =
+        for _ in 1 .. 20 do
+            use cts = new CancellationTokenSource()
+            let mutable unwinding = 0
+            let child = async2 {
+                Interlocked.Increment(&unwinding) |> ignore
+                try
+                    cts.Cancel()
+                    do! Async2.Sleep 10_000
+                    return None
+                finally
+                    Thread.Sleep 20
+                    Interlocked.Decrement(&unwinding) |> ignore
+            }
+            let computation : Async2<int option> = Async2.Choice(Array.replicate 64 child)
+            let running = Async2.StartAsTask(computation, cancellationToken = cts.Token)
+
+            Assert.ThrowsAny<OperationCanceledException>(fun () -> running.GetAwaiter().GetResult() |> ignore)
+            |> ignore
+            Assert.Equal(0, Volatile.Read(&unwinding))
+
+    [<Fact>]
     let ``Choice cancels its siblings when one returns Some`` () =
         use started = new ManualResetEventSlim(false)
         use canceled = new ManualResetEventSlim(false)

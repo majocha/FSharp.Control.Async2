@@ -38,12 +38,13 @@ module AsyncInteropTests =
         member _.Trigger value = inner.Trigger value
 
         interface IEvent<Handler<'T>, 'T> with
+            // Count only once the handler is attached or detached, so a test that waits for the count sees it in effect.
             member _.AddHandler handler =
-                Interlocked.Increment(&handlers) |> ignore
                 inner.Publish.AddHandler handler
+                Interlocked.Increment(&handlers) |> ignore
             member _.RemoveHandler handler =
-                Interlocked.Decrement(&handlers) |> ignore
                 inner.Publish.RemoveHandler handler
+                Interlocked.Decrement(&handlers) |> ignore
             member _.Subscribe observer = inner.Publish.Subscribe observer
 
     type CustomArgs(value: int) =
@@ -199,10 +200,14 @@ module AsyncInteropTests =
 
     [<Fact>]
     let ``StartChild timeout runs from the start of the await`` () =
+        // The child is still running when a timeout counted from StartChild expires,
+        // and finishes long before one counted from the await.
+        let gate = TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously)
         let result =
             async2 {
-                let! child = Async2.StartChild(Async2.Sleep 1000 |> Async2.map (fun () -> 1), 800)
-                do! Async2.Sleep 600
+                let! child = Async2.StartChild(Async2.AwaitTask gate.Task, 1000)
+                do! Async2.Sleep 1500
+                gate.SetResult 1
                 return! child
             }
             |> Async2.RunSynchronously
@@ -214,18 +219,27 @@ module AsyncInteropTests =
         let outcome =
             async2 {
                 let! finished = Async2.StartChild(async2 { return 2 }, 0)
-                do! Async2.Sleep 50
-                let! value = finished
+                // The child runs on the thread pool, so retry until it has finished.
+                let deadline = DateTime.UtcNow.AddSeconds 30.0
+                let mutable value = None
+                while value.IsNone && DateTime.UtcNow < deadline do
+                    try
+                        let! result = finished
+                        value <- Some result
+                    with :? TimeoutException -> ()
+                    if value.IsNone then
+                        do! Async2.Sleep 10
+
                 let! pending = Async2.StartChild(Async2.AwaitTask gate.Task, 0)
                 try
                     let! _ = pending
-                    return -1
+                    return None
                 with :? TimeoutException ->
                     return value
             }
             |> Async2.RunSynchronously
         gate.SetResult 0
-        Assert.Equal(2, outcome)
+        Assert.Equal(Some 2, outcome)
 
     [<Fact>]
     let ``StartChild with a timeout is cancelled with its parent`` () =

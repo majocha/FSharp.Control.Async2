@@ -50,6 +50,19 @@ module internal Async2RuntimeHelpers =
 
     let cancellationTokenAsync = Async2(fun ctx -> Task.FromResult(ctx.CancellationToken))
 
+    /// Starts the workers and completes once all of them have finished, whatever their outcome.
+    /// Every bind checks for cancellation before it starts its source, so starting the workers inside
+    /// the bound computation leaves no check between starting and awaiting them: once any worker has
+    /// started, the caller waits for all of them.
+    let startAndJoin (startWorkers: unit -> Task<'W> array) =
+        Async2<unit>(fun _ ->
+            Task.WhenAll(startWorkers ()).ContinueWith(
+                Func<Task<'W array>, unit>(ignore),
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default
+            ))
+
     /// Starts `computation` with `start`. When creation options are given, the returned task is created with
     /// them and completes once the computation has finished.
     let startAsTask start cancellationToken (computation: Async2<'T>) taskCreationOptions : Task<'T> =
@@ -309,7 +322,7 @@ type Async2 =
             let mutable index = -1
             let workerCount = min computations.Length maxDegreeOfParallelism
             let results = Array.zeroCreate<'T> computations.Length
-            let workers =
+            do! startAndJoin (fun () ->
                 Array.init workerCount (fun _ ->
                     let worker = async2 {
                         try 
@@ -326,12 +339,8 @@ type Async2 =
                                 cts.Cancel()
                         | _ -> ()
                     }
-                    Task.Run<unit>(fun () -> worker.StartInIsolatedTrampoline innerToken))
+                    Task.Run<unit>(fun () -> worker.StartInIsolatedTrampoline innerToken)))
 
-            try
-                let! completed = Task.WhenAll workers
-                ignore completed
-            with _ -> ()
             firstFailure |> Option.iter _.Throw()
             return results
         }
@@ -369,13 +378,7 @@ type Async2 =
                 }
                 |> startOnThreadPool cts.Token
 
-            let workers = computations |> Array.map worker
-
-            try
-                let! rejoin = Task.WhenAll(workers)
-                ignore rejoin
-            with _ -> ()
-            
+            do! startAndJoin (fun () -> computations |> Array.map worker)
             return result
         }
 

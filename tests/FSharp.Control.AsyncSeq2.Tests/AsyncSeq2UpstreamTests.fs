@@ -1949,14 +1949,15 @@ let ``AsyncSeq2.mapAsyncUnorderedParallel should propagate exceptions`` () =
 let ``AsyncSeq2.mapAsyncUnorderedParallel should not preserve order`` () =
   // Test that results can come in different order than input
   let input = [1; 2; 3; 4; 5]
-  let results = System.Collections.Generic.List<int>()
+  // The mappings run in parallel, so record them in a thread-safe collection.
+  let results = System.Collections.Concurrent.ConcurrentQueue<int>()
 
   input
   |> AsyncSeq2.ofSeq
   |> AsyncSeq2.mapAsyncUnorderedParallel (fun x -> async2 {
     // Longer delay for smaller numbers to encourage reordering
     do! Async2.Sleep(60 - x * 10)
-    results.Add(x)
+    results.Enqueue(x)
     return x
   })
   |> AsyncSeq2.iter ignore
