@@ -1,194 +1,93 @@
 # FSharp.Control.Async2
 
-A separate asynchronous computation-expression library, named `Async2` and
-`async2` so it can be developed independently without conflicting with
-FSharp.Core's `Async` and `async`.
+A reimplementation of F# `async` on .NET runtime async. It is named `Async2` /
+`async2` so it can live next to FSharp.Core's `Async` / `async`, and it follows
+their API and semantics unless listed below.
 
-The implementation uses the preview runtime-async compiler feature.
-`Async2<'T>` is a cold carrier: its runtime-async `Task<'T>` factory receives
-the `CancellationToken` supplied when the computation is started. Nested starts
-run inline up to a fixed depth while stack space is available; deeper starts are
-queued on a per-thread trampoline that the outermost start drains, so the
-awaiting parent resumes on a shallow stack. Inside `async2` or `asyncSeq2`,
-`let! ct = CurrentCancellationToken` reads the start token without starting a
-computation (`Async2.CancellationToken` remains available as an `Async2` value).
-`return!` of another `Async2` in tail position (compiled to `ReturnFromFinal`) is
-handed to a loop owned by the outermost computation, so tail-recursive workflows
-run in constant stack and memory. The finished frame no longer awaits its tail
-callee, so `AsyncLocal` changes made by the caller are not visible to it and the
-caller frames are absent from stack traces.
-Both library projects target `net11.0`; the test projects use xUnit v3 with the
-Microsoft Testing Platform runner.
+- **FSharp.Control.Async2**: `async2`, `Async2` and `MailboxProcessor2`.
+- **FSharp.Control.AsyncSeq2**: `asyncSeq2` and the `AsyncSeq2` operations.
 
-## Async2
+Experimental: it needs a preview F# compiler with runtime-async support (see
+[Building](#building)).
 
-The core library provides the `async2 { ... }` computation expression and
-`Async2` operations for starting, composing, and awaiting asynchronous work.
-The builder accepts `Async2`, `Task`, `ValueTask`, and awaitable sources;
-`Async2.Sleep` and other cold operations observe the token used to start the
-computation.
+## Differences from `async`
+
+- `async2` binds `Task`, `ValueTask` and any awaitable directly, as well as F#
+  `Async`. No `Async.AwaitTask` needed.
+- `let! ct = CurrentCancellationToken` reads the token without starting a
+  computation. `Async2.CancellationToken` also works but costs a small start.
+- A tail-position `return!` hands over to its callee and the caller's frame
+  finishes. The callee does not see `AsyncLocal` values the caller set, and the
+  caller does not appear in stack traces.
+- Extra operations: `Async2.RunSynchronouslyImmediate`, `Async2.Await` and
+  `Async2.StartTaskImmediate` for tasks and awaitables, and the module
+  functions `Async2.map`, `bind`, `catch`, `catchWith`, `parallelLimit` and
+  friends.
+- Not done yet: `FromBeginEnd` and `AwaitEvent`. `StartChild` ignores its
+  timeout, and `StartAsTask` / `StartChildAsTask` ignore `TaskCreationOptions`.
+
+`MailboxProcessor2<'Msg>` is FSharp.Core's `MailboxProcessor` with an `async2`
+body and `AsyncReplyChannel2<'Reply>` replies.
+
+## AsyncSeq2
+
+`asyncSeq2 { ... }` builds an `AsyncSeq2<'T>`, which is `IAsyncEnumerable<'T>`.
+The token passed to `GetAsyncEnumerator` flows into every `Async2` and nested
+sequence it binds. Terminal operations return `Async2`.
 
 ```fsharp
-open System.Threading
-open Microsoft.FSharp.Control
-
-let computation =
-    async2 {
-        do! Async2.Sleep 100
-        return 42
+let numbers =
+    asyncSeq2 {
+        for i in 1 .. 3 do
+            do! Async2.Sleep 10
+            yield i
     }
 
-use cancellation = new CancellationTokenSource()
-let result =
-    Async2.RunSynchronously(computation, cancellationToken = cancellation.Token)
+let result = AsyncSeq2.toArray numbers |> Async2.RunSynchronously
 ```
 
-`src/FSharp.Control.Async2` builds independently of the sequence library.
-`MailboxProcessor2<'Msg>` is also part of this core library; see its section
-below.
+`AsyncSeq2` combines the operations of
+[FSharp.Control.AsyncSeq](https://github.com/fsprojects/FSharp.Control.AsyncSeq)
+and [FSharp.Control.TaskSeq](https://github.com/fsprojects/FSharp.Control.TaskSeq).
+Coming from AsyncSeq:
 
-## Build and tests
+- `Async<'T>` becomes `Async2<'T>`.
+- Signatures follow TaskSeq: counts and indexes are `int`, not `int64`, and
+  `groupBy`, `chunkBy` and similar return arrays.
+- Behaviour follows AsyncSeq: `take` and `skip` stop quietly at the end,
+  `tail` of an empty sequence is empty, and `head`, `last`, `reduce`, `min`,
+  `max` and friends raise `InvalidOperationException` on an empty sequence.
+- `prefetch` takes no count; it reads one element ahead.
 
-The repository pins a .NET 11 preview SDK in `global.json` and uses a local F#
-compiler build with runtime-async support. The root `Directory.Build.props`
-selects `$(RuntimeAsyncBin)\fsc\Release\net11.0\fsc.dll` and references
-`$(RuntimeAsyncBin)\FSharp.Core\Release\net10.0\FSharp.Core.dll`.
-`RuntimeAsyncBin` defaults to `c:\dev\repos\fsharp\artifacts\bin`; override
-`RuntimeAsyncBin` or set `RuntimeAsyncBitsPath` to use artifacts from another
-local F# checkout.
+The `asyncSeq2` builder is adapted from TaskSeq. See `ASYNCSEQ-LICENSE.txt` and
+`TASKSEQ-LICENSE.txt` in `src/FSharp.Control.AsyncSeq2`.
 
-Build the solution and run its tests with:
+## Building
+
+`global.json` pins a .NET 11 preview SDK. `Directory.Build.props` takes the F#
+compiler and FSharp.Core from `RuntimeAsyncBin`, which defaults to
+`c:\dev\repos\fsharp\artifacts\bin`. Set `RuntimeAsyncBin` (or
+`RuntimeAsyncBitsPath`) to use another F# checkout.
 
 ```sh
 dotnet build
 dotnet test
 ```
 
-The focused `AsyncType`, `AsyncModule`, and `AsyncModuleFunctions` suites are accompanied by direct xUnit ports of older compiler-library regressions. RuntimeAsync compiler-component tests are intentionally outside this project.
+The tests include ports of FSharp.Core's async tests, side-by-side checks
+against FSharp.Core's `MailboxProcessor`, AsyncSeq's 494 tests and TaskSeq's 74
+test files, each adjusted for the differences above.
 
 ## Benchmarks
 
-The `benchmarks/FSharp.Control.Async2.Benchmarks` project uses BenchmarkDotNet to measure runtime and allocations for recursive computations, cancellation, exception propagation, and per-level `try/with` and `try/finally` handling. Results are reported for recursion depths of 16, 256, and 2048. The recursive workloads await `Task.Yield()` every 16 levels, including the deepest level, to mix synchronous work with asynchronous suspension. Expected exceptions and cancellation are handled explicitly; unexpected failures are not swallowed.
-
-Each workload has a built-in `async` counterpart with an `Async` method suffix.
-Results are grouped by workload and depth, with `async2` as each pair's baseline.
-Both implementations start immediately and synchronously wait for completion:
-`Async2.RunSynchronouslyImmediate` versus `Async.StartImmediateAsTask` followed
-by `GetAwaiter().GetResult()`. Built-in `async` awaits `Task.Yield()` through
-`Async.FromContinuations`, without an intermediate task per yield.
-Built-in `Async.StartImmediateAsTask` does not preserve the cancellation token
-in its canceled task, so its cancellation cases check that their token source
-was canceled rather than requiring exception-token identity.
-
-Build and run the benchmarks in Release mode with:
+`benchmarks/FSharp.Control.Async2.Benchmarks` compares `async2` with `async`:
+eight workloads (recursion, cancellation, exceptions, `try/with` and
+`try/finally` at every level) at depths 16, 256 and 2048, awaiting
+`Task.Yield()` every 16 levels.
 
 ```sh
-dotnet run --project benchmarks/FSharp.Control.Async2.Benchmarks/FSharp.Control.Async2.Benchmarks.fsproj -c Release
+dotnet run -c Release --project benchmarks/FSharp.Control.Async2.Benchmarks/FSharp.Control.Async2.Benchmarks.fsproj
 ```
 
-Pass BenchmarkDotNet arguments after `--`, for example `-- --filter *DeepException*`.
-
-Run a single cold-start measurement of every case (eight workloads for both
-implementations at three depths, totaling 48 cases) as a quick
-failure/stack-overflow check:
-
-```sh
-dotnet run --project benchmarks/FSharp.Control.Async2.Benchmarks/FSharp.Control.Async2.Benchmarks.fsproj -c Release -- --filter "*" --job Dry
-```
-
-The benchmark runner exits with a nonzero code if validation or a benchmark
-fails. Dry-job timings are smoke checks, not statistically reliable measurements.
-
-## MailboxProcessor2
-
-`MailboxProcessor2<'Msg>` is an `async2`-native mailbox agent with `Post`,
-`Receive`, `TryReceive`, `Scan`, `TryScan`, reply channels, cancellation,
-`Start`, and `StartImmediate`. Its name and `AsyncReplyChannel2<'Reply>` keep
-it distinct from FSharp.Core's `MailboxProcessor` and `AsyncReplyChannel`.
-
-Its mailbox semantics follow FSharp.Core: only one reader operation may run
-at a time, asynchronous reply methods post their message when called, and
-`Dispose` clears the mailbox without canceling its body. Supply a cancellation
-token explicitly when cancellable infinite waits are required.
-
-```fsharp
-type Message = | Add of int | Read of AsyncReplyChannel2<int>
-
-let counter =
-    MailboxProcessor2<Message>.Start(fun inbox ->
-        let rec loop total =
-            async2 {
-                match! inbox.Receive() with
-                | Add value -> return! loop (total + value)
-                | Read reply ->
-                    reply.Reply total
-                    return! loop total
-            }
-        loop 0)
-
-counter.Post(Add 42)
-let total =
-    counter.PostAndAsyncReply((fun reply -> Read reply))
-    |> Async2.RunSynchronously
-```
-
-## AsyncSeq2
-
-`src/FSharp.Control.AsyncSeq2` remains a separate library referencing Async2,
-so applications using only `async2` do not take on the sequence API or its
-packaging dependencies. It provides
-`asyncSeq2 { ... }` in `Microsoft.FSharp.Control`, yielding `AsyncSeq2<'T>` (an
-`IAsyncEnumerable<'T>`). It supports `yield`, `yield!`, `for`, `let!`/`do!` on
-tasks, value tasks, and `Async2`, plus synchronous or asynchronous `use`.
-The builder is adapted from FSharp.Control.TaskSeq (see `src/FSharp.Control.AsyncSeq2/TASKSEQ-LICENSE.txt`).
-Each enumeration is cold; `GetAsyncEnumerator(token)` passes its token to
-bound `Async2` computations and nested asynchronous sequences. `async2` can
-consume an `AsyncSeq2<'T>` directly with `for`.
-`ofAsync2Seq`, `ofAsync2List`, and `ofAsync2Array` turn collections of cold
-`Async2` computations into sequences; `ofSeqAsync` remains an equivalent
-constructor for `seq<Async2<'T>>`.
-
-`AsyncSeq2` provides constructors, transformations, and the TaskSeq operation
-surface, as well as AsyncSeq-derived operations such as `cycle`, `rev`,
-`splitInto`, `sortAsync`, `findBack`, `map2`, `allPairs`, and `unzip`. The
-AsyncSeq-derived operators and the TaskSeq-compatible terminal operations use
-`Async2` for asynchronous callbacks and cold terminal results; their
-cancellation token flows implicitly to the enumerator. Existing `Task` and
-`ValueTask` sources remain supported, but a previously started task cannot
-retroactively inherit an enumeration token.
-`AsyncSeq2Src` provides a broadcast source: `toAsyncSeq` subscribes at the
-current tail, and `put`, `close`, or `error` notify existing subscribers.
-See `ASYNCSEQ-LICENSE.txt` and `TASKSEQ-LICENSE.txt` for upstream attribution.
-
-```fsharp
-let values = asyncSeq2 {
-    for i in 1..3 do
-        do! Async2.Sleep 10
-        yield i
-}
-
-let result = AsyncSeq2.toArray values |> Async2.RunSynchronously
-```
-
-`FSharp.Control.AsyncSeq2.Tests` contains xUnit v3/MTP builder, AsyncSeq
-operator, cleanup, composition, and cancellation tests. It also ports all 494
-active tests from FSharp.Control.AsyncSeq's `AsyncSeqTests.fs`, adapting
-`Async<'T>` to `Async2<'T>` and accounting for the TaskSeq-shaped signatures
-(such as `int` indexes and array-valued groups). Where AsyncSeq and TaskSeq
-behave differently at runtime, AsyncSeq2 follows AsyncSeq: `take`/`skip` stop
-at the end of a shorter source (like `truncate`/`drop`), `tail` of an empty
-sequence is empty, element accessors and reductions over an empty sequence
-raise `InvalidOperationException`, `removeManyAt` raises when its range runs
-past the end, and `prefetch` buffers at most one element. `AsyncSeq2.empty` is a
-value, and `asyncSeq2` can bind F# `Async<'T>` computations with the
-enumeration token. `Async2.StartChild` starts its child as
-soon as the parent creates it, so bounded channel producers and consumers
-can run concurrently. Disposing an enumerator from `toBlockingSeq` cancels
-its enumeration token.
-`FSharp.Control.AsyncSeq2.TaskSeq.Tests` ports all 74 non-smoke TaskSeq test
-files (including two upstream-skipped cases) to xUnit v3/MTP. Transformation
-tests call `AsyncSeq2` directly with native `async2` callbacks; xUnit test
-boundaries and explicit `Task` and `ValueTask` interoperability tests retain
-those carriers. The old F# `Async<'T>` sources and conversion helpers have
-been replaced by `Async2<'T>`; use `Async2` computations for cold, cancellable
-operations.
+Pass BenchmarkDotNet options after `--`, such as `-- --filter *DeepException*`.
+`-- --filter "*" --job Dry` runs every case once as a quick smoke test.
