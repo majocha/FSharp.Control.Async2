@@ -74,12 +74,28 @@ and Async2Invocation<'R> = Async2Context<'R> -> Task<'R>
 /// Carries the next computation of a tail-call chain from a finished frame back to the loop that owns the chain.
 and [<Sealed; NoEquality; NoComparison; System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)>] TailBox<'R>() =
     let mutable next = ValueNone
+    let mutable context: ExecutionContext | null = null
 
-    member _.Set(invocation: Async2Invocation<'R>) = next <- ValueSome invocation
+    member _.Set(invocation: Async2Invocation<'R>) =
+        next <- ValueSome invocation
+        // The handing frame finishes before the loop starts the callee, and finishing reverts the
+        // execution context to the loop's, so keep the one the callee has to start in.
+        context <- ExecutionContext.Capture()
 
+    /// Takes the handed-over computation and switches the loop to the execution context it was handed over in.
+    /// The loop runs at the end of its own frame, so the switched context is reverted when that frame finishes.
     member _.TryTake() =
         let taken = next
         next <- ValueNone
+
+        match context with
+        | null -> ()
+        | handed ->
+            context <- null
+
+            if not (obj.ReferenceEquals(handed, ExecutionContext.Capture())) then
+                ExecutionContext.Restore handed
+
         taken
 
 module Async2Context =

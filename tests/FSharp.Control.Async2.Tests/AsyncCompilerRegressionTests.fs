@@ -580,6 +580,50 @@ module AsyncCompatibilityTests =
         Assert.Equal<string list>([ "leaf"; "dispose" ], List.ofSeq log)
 
     [<Fact>]
+    let ``Tail call flows the ExecutionContext of the calling frame`` () =
+        let local = AsyncLocal<string>()
+        let leaf = async2 { return local.Value }
+        let middle = async2 {
+            local.Value <- "middle"
+            return! leaf
+        }
+        let root = async2 {
+            local.Value <- "root"
+            return! middle
+        }
+        Assert.Equal("middle", Async2.RunSynchronously root)
+
+    [<Fact>]
+    let ``Tail call flows the ExecutionContext of the calling frame after it resumes`` () =
+        let local = AsyncLocal<string>()
+        let leaf = async2 { return local.Value }
+        let middle = async2 {
+            local.Value <- "middle"
+            do! Async2.Sleep 5
+            return! leaf
+        }
+        let root = async2 {
+            local.Value <- "root"
+            return! middle
+        }
+        Assert.Equal("middle", Async2.RunSynchronously root)
+
+    [<Fact>]
+    let ``Tail call does not leak the ExecutionContext of a callee into its caller`` () =
+        let local = AsyncLocal<string>()
+        let leaf = async2 { return 0 }
+        let middle = async2 {
+            local.Value <- "middle"
+            return! leaf
+        }
+        let root = async2 {
+            local.Value <- "root"
+            let! _ = async2 { return! middle }
+            return local.Value
+        }
+        Assert.Equal("root", Async2.RunSynchronously root)
+
+    [<Fact>]
     let ``CurrentCancellationToken reads the start token`` () =
         use cts = new CancellationTokenSource()
         let computation = async2 {
