@@ -84,6 +84,9 @@ module ExceptionCache =
 /// nested start owns the trampoline there and drains it before control goes back to that code.
 [<Sealed; AllowNullLiteral; System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)>]
 type Async2Trampoline() =
+    [<ThreadStatic; DefaultValue>]
+    static val mutable private cached: Async2Trampoline
+
     let mutable queue: Queue<unit -> unit> | null = null
 
     /// The managed thread id of the owner, or 0.
@@ -102,6 +105,23 @@ type Async2Trampoline() =
             created.Enqueue action
             queue <- created
         | existing -> existing.Enqueue action
+
+    /// A trampoline owned by this thread for a new start: the one the last start on this thread gave back,
+    /// or a new one. A start on another thread may still be releasing the cached one, so it is owned first.
+    static member internal Rent() =
+        let cached = Async2Trampoline.cached
+        Async2Trampoline.cached <- null
+
+        if not (isNull cached) && cached.TryOwn() then
+            cached
+        else
+            let created = Async2Trampoline()
+            created.TryOwn() |> ignore
+            created
+
+    /// Gives back the trampoline of a start that completed. Builder code reaches a trampoline only through the
+    /// frames of its start, and those have all finished, so the next start on this thread can use it.
+    static member internal Return(trampoline: Async2Trampoline) = Async2Trampoline.cached <- trampoline
 
     /// Runs `action` as the owner, after a successful `TryOwn`, then drains everything queued meanwhile.
     member inline internal this.RunAsOwner([<InlineIfLambda>] action: unit -> 'T) =
@@ -221,9 +241,14 @@ module internal Async2StartTrampoline =
 
     /// Starts as the owner of a new trampoline, so the caller observes all synchronous progress.
     let startIsolated (invocation: Async2Invocation<'T>) ct =
-        let trampoline = Async2Trampoline()
-        trampoline.TryOwn() |> ignore
-        trampoline.RunAsOwner(fun () -> invoke invocation (Async2Context.create ct trampoline))
+        let trampoline = Async2Trampoline.Rent()
+        let task = trampoline.RunAsOwner(fun () -> invoke invocation (Async2Context.create ct trampoline))
+
+        // A start that suspended still has frames that hold its trampoline.
+        if task.IsCompleted then
+            Async2Trampoline.Return trampoline
+
+        task
 
     /// A start nested in another one, which awaits it: it shares the parent's trampoline. When another thread owns
     /// that one, the parent runs concurrently with the owner, and the start gets a trampoline of its own.
