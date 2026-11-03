@@ -42,88 +42,6 @@ module AwaitableHelpers =
 
 open AwaitableHelpers
 
-/// The exception that `ExceptionCache.throwCached` rethrows on this thread now, and the trampoline of the start
-/// whose frame rethrows it. The awaiting parent uses it to tell propagation from a new throw of the same exception
-/// object. The parent of a frame shares its trampoline, so a mark that a finished start leaves behind does not
-/// match a frame of another start.
-[<AbstractClass; Sealed>]
-type internal PropagatingException =
-    [<ThreadStatic; DefaultValue>]
-    static val mutable private error: exn | null
-
-    [<ThreadStatic; DefaultValue>]
-    static val mutable private owner: obj | null
-
-    static member Set(error: exn, owner: obj | null) =
-        PropagatingException.error <- error
-        PropagatingException.owner <- owner
-
-    static member Clear() =
-        PropagatingException.error <- null
-        PropagatingException.owner <- null
-
-    /// True if a frame of the start that owns `owner` rethrows `error` now. Clears the mark.
-    static member Take(error: exn, owner: obj | null) =
-        let propagating =
-            obj.ReferenceEquals(PropagatingException.error, error)
-            && obj.ReferenceEquals(PropagatingException.owner, owner)
-            && not (isNull owner)
-
-        PropagatingException.Clear()
-        propagating
-
-module ExceptionCache =
-    let private store = ConditionalWeakTable<exn, ExceptionDispatchInfo>()
-
-    let private capture =
-        ConditionalWeakTable<exn, ExceptionDispatchInfo>.CreateValueCallback(fun error -> ExceptionDispatchInfo.Capture error)
-
-    /// Rethrows `error` with the dispatch info captured where it was thrown, so a failure propagating through
-    /// many frames does not grow its stack trace at every frame. `owner` is the trampoline of the awaiting frame,
-    /// or null for an await outside builder code.
-    ///
-    /// A failure that this function did not rethrow in a frame of the same start is a new throw: from user code,
-    /// from a foreign awaiter, or from a rethrow in a rewritten handler. It replaces the entry, so a new throw of
-    /// the same exception object does not get an old trace. When the parent resumes on another thread, it does
-    /// not see the mark and replaces the entry with the current trace, which is one section longer but is still
-    /// the trace of this throw.
-    let throwCached (owner: obj | null) (error: exn) : 'T =
-        let edi =
-            if PropagatingException.Take(error, owner) then
-                store.GetValue(error, capture)
-            else
-                let edi = ExceptionDispatchInfo.Capture error
-                store.AddOrUpdate(error, edi)
-                edi
-
-        PropagatingException.Set(error, owner)
-        edi.Throw()
-        Unchecked.defaultof<_>
-
-    /// For a failure that user code catches. A later throw of the same object is then a new throw.
-    let handled () = PropagatingException.Clear()
-
-    /// Awaits `task` and rethrows its failure through the cache. The wait itself never throws: awaiting a
-    /// faulted task directly would throw once in the awaiter, again where the suspended frame resumes, and
-    /// a third time here, so a failure crossing one frame would cost three throws instead of one.
-    /// `UnsafeAwaitAwaiter` only waits for completion and never calls `GetResult`; unlike awaiting a
-    /// `ConfigureAwait(SuppressThrowing)` awaitable, it allocates nothing beyond what `Await` does.
-    let inline await (owner: obj | null) (task: Task<'T>) =
-        if not task.IsCompleted then
-            AsyncHelpers.UnsafeAwaitAwaiter(task.GetAwaiter())
-
-        if task.IsCompletedSuccessfully then
-            task.Result
-        else
-            match task.Exception with
-            | null ->
-                // Cancelled: only the awaiter can produce the OperationCanceledException the task holds.
-                try
-                    task.GetAwaiter().GetResult()
-                with error ->
-                    throwCached owner error
-            | failure -> throwCached owner failure.InnerExceptions[0]
-
 /// The queue of deferred starts and completions of one start from user code, shared by every start nested
 /// in it. The thread that owns it drains the queue before giving it up, so the queue is empty whenever nobody
 /// owns it, and only the owner touches the queue. Queued actions handle their own failures and never throw.
@@ -138,8 +56,40 @@ type Async2Trampoline() =
 
     let mutable queue: Queue<unit -> unit> | null = null
 
+    /// The failure that `ExceptionCache.throwCached` rethrew last in a frame of this start, or null.
+    let mutable propagating: exn | null = null
+
+    /// The trampoline that holds the failure for this one, or null when this one holds it.
+    let mutable markHolder: Async2Trampoline | null = null
+
     /// The managed thread id of the owner, or 0.
     let mutable owner = 0
+
+    member private this.MarkHolder =
+        match markHolder with
+        | null -> this
+        | holder -> holder
+
+    member private _.Mark
+        with get () = propagating
+        and set (value: exn | null) = propagating <- value
+
+    /// The failure that `ExceptionCache.throwCached` rethrew last in a frame of this start, or null. The frames
+    /// of one start run one after another, and the completion of a frame's task orders its write before the read
+    /// of the parent that awaits it, also when the parent resumes on another thread.
+    member internal this.Propagating
+        with get () = this.MarkHolder.Mark
+        and set (value: exn | null) = this.MarkHolder.Mark <- value
+
+    /// For a nested start that cannot share the trampoline of its parent: it shares the failure mark, so the
+    /// parent sees that a failure of this start propagates.
+    member internal this.ShareMarkOf(parent: Async2Trampoline) = markHolder <- parent.MarkHolder
+
+    /// Forgets the failure mark before the trampoline is reused for another start.
+    member internal _.ResetMark() =
+        match markHolder with
+        | null -> propagating <- null
+        | _ -> markHolder <- null
 
     member internal _.IsOwnedHere = Volatile.Read(&owner) = Environment.CurrentManagedThreadId
 
@@ -197,6 +147,62 @@ type Async2Trampoline() =
         RuntimeHelpers.TryEnsureSufficientExecutionStack()
         || not (isNull SynchronizationContext.Current)
         || not (obj.ReferenceEquals(TaskScheduler.Current, TaskScheduler.Default))
+
+module ExceptionCache =
+    let private store = ConditionalWeakTable<exn, ExceptionDispatchInfo>()
+
+    let private capture =
+        ConditionalWeakTable<exn, ExceptionDispatchInfo>.CreateValueCallback(fun error -> ExceptionDispatchInfo.Capture error)
+
+    /// Rethrows `error` with the dispatch info captured where it was thrown, so a failure propagating through
+    /// many frames does not grow its stack trace at every frame. `owner` is the trampoline of the awaiting frame,
+    /// or null for an await outside builder code.
+    ///
+    /// The trampoline holds the failure that this function rethrew last in a frame of the start, so the awaiting
+    /// parent tells propagation from a new throw of the same exception object on any thread. A user handler that
+    /// rethrows the same object propagates the failure. Any other failure is a new throw: from user code, from a
+    /// foreign awaiter, or a throw after a handler handled the failure. It replaces the entry, so a new throw of
+    /// the same exception object does not get an old trace.
+    let throwCached (owner: Async2Trampoline | null) (error: exn) : 'T =
+        let edi =
+            match owner with
+            | null ->
+                let edi = ExceptionDispatchInfo.Capture error
+                store.AddOrUpdate(error, edi)
+                edi
+            | owner when obj.ReferenceEquals(owner.Propagating, error) -> store.GetValue(error, capture)
+            | owner ->
+                let edi = ExceptionDispatchInfo.Capture error
+                store.AddOrUpdate(error, edi)
+                owner.Propagating <- error
+                edi
+
+        edi.Throw()
+        Unchecked.defaultof<_>
+
+    /// For a failure that a user handler handled. A later throw of the same object is then a new throw.
+    let handled (trampoline: Async2Trampoline) = trampoline.Propagating <- null
+
+    /// Awaits `task` and rethrows its failure through the cache. The wait itself never throws: awaiting a
+    /// faulted task directly would throw once in the awaiter, again where the suspended frame resumes, and
+    /// a third time here, so a failure crossing one frame would cost three throws instead of one.
+    /// `UnsafeAwaitAwaiter` only waits for completion and never calls `GetResult`; unlike awaiting a
+    /// `ConfigureAwait(SuppressThrowing)` awaitable, it allocates nothing beyond what `Await` does.
+    let inline await (owner: Async2Trampoline | null) (task: Task<'T>) =
+        if not task.IsCompleted then
+            AsyncHelpers.UnsafeAwaitAwaiter(task.GetAwaiter())
+
+        if task.IsCompletedSuccessfully then
+            task.Result
+        else
+            match task.Exception with
+            | null ->
+                // Cancelled: only the awaiter can produce the OperationCanceledException the task holds.
+                try
+                    task.GetAwaiter().GetResult()
+                with error ->
+                    throwCached owner error
+            | failure -> throwCached owner failure.InnerExceptions[0]
 
 /// The state threaded through builder code: the cancellation token, the trampoline of the start, and, when
 /// the computation was started by a tail-call loop, the box a final `return!` hands its callee to. `'R` is the
@@ -288,21 +294,24 @@ module internal Async2StartTrampoline =
 
         completion.Task
 
-    /// Starts as the owner of a new trampoline, so the caller observes all synchronous progress.
-    let startIsolated (invocation: Async2Invocation<'T>) ct =
-        let trampoline = Async2Trampoline.Rent()
+    let private startOwned (trampoline: Async2Trampoline) (invocation: Async2Invocation<'T>) ct =
         let task = trampoline.RunAsOwner(fun () -> invoke invocation (Async2Context.create ct trampoline))
 
         // A start that suspended still has frames that hold its trampoline.
         if task.IsCompleted then
-            // The next start can reuse the trampoline, so its frames must not match a mark that this start left.
-            PropagatingException.Clear()
+            // The next start can reuse the trampoline, so its frames must not match a failure that this start left.
+            trampoline.ResetMark()
             Async2Trampoline.Return trampoline
 
         task
 
+    /// Starts as the owner of a new trampoline, so the caller observes all synchronous progress.
+    let startIsolated (invocation: Async2Invocation<'T>) ct =
+        startOwned (Async2Trampoline.Rent()) invocation ct
+
     /// A start nested in another one, which awaits it: it shares the parent's trampoline. When another thread owns
-    /// that one, the parent runs concurrently with the owner, and the start gets a trampoline of its own.
+    /// that one, the parent runs concurrently with the owner, and the start gets a trampoline of its own. That
+    /// trampoline shares the failure mark of the parent, so a failure that propagates keeps its cached trace.
     let start (trampoline: Async2Trampoline) (invocation: Async2Invocation<'T>) ct =
         let ctx = Async2Context.create ct trampoline
 
@@ -314,7 +323,9 @@ module internal Async2StartTrampoline =
         elif trampoline.TryOwn() then
             trampoline.RunAsOwner(fun () -> invoke invocation ctx)
         else
-            startIsolated invocation ct
+            let own = Async2Trampoline.Rent()
+            own.ShareMarkOf trampoline
+            startOwned own invocation ct
 
 /// Bound with `let!` in `async2` or `asyncSeq2` to read the token the computation was started with,
 /// without starting another computation the way `Async2.CancellationToken` does.
@@ -424,9 +435,14 @@ type Async2Builder() =
             try
                 body ctx
             with error ->
-                ExceptionCache.handled ()
+                // The mark stays while the handler runs: a handler that rethrows the same object, such as a
+                // `when` that does not match, propagates the failure, and the parent uses the cached trace.
+                // If the parent captured the trace again at each such frame, the trace would grow by one
+                // section per frame. A handler that returns has handled the failure.
                 check ctx.CancellationToken
-                handler error ctx
+                let result = handler error ctx
+                ExceptionCache.handled ctx.Trampoline
+                result
 
     member inline _.TryFinally ([<InlineIfLambda>] body, [<InlineIfLambda>] compensation) : Async2Code<_, 'T> =
         fun ctx ->

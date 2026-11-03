@@ -1121,3 +1121,43 @@ module ExceptionCacheTests =
         let trace = traceOf (failingChain 1000 (fun () -> throwAtSiteB (InvalidOperationException "deep")))
         Assert.Contains("throwAtSiteB", trace)
         Assert.True(trace.Split('\n').Length < 20, trace)
+
+    /// Each frame catches the failure with a `when` that does not match, so its handler rethrows the same object.
+    let rec rethrowingChain depth (thrower: unit -> int) =
+        async2 {
+            try
+                if depth = 0 then
+                    return thrower ()
+                else
+                    let! x = rethrowingChain (depth - 1) thrower
+                    return x + 1
+            with error when error.Message = "never" ->
+                return -1
+        }
+
+    [<Fact>]
+    let ``Deep failure through handlers that rethrow keeps a short trace`` () =
+        let trace = traceOf (rethrowingChain 1000 (fun () -> throwAtSiteB (InvalidOperationException "deep")))
+        Assert.Contains("throwAtSiteB", trace)
+        Assert.True(trace.Split('\n').Length < 20, trace)
+
+    /// As `rethrowingChain`, but each frame yields first, so a parent can resume on another thread.
+    let rec yieldingRethrowingChain depth (thrower: unit -> int) =
+        async2 {
+            try
+                do! Task.Yield()
+
+                if depth = 0 then
+                    return thrower ()
+                else
+                    let! x = yieldingRethrowingChain (depth - 1) thrower
+                    return x + 1
+            with error when error.Message = "never" ->
+                return -1
+        }
+
+    [<Fact>]
+    let ``Deep failure through handlers that rethrow on other threads keeps a short trace`` () =
+        let trace = traceOf (yieldingRethrowingChain 5000 (fun () -> throwAtSiteB (InvalidOperationException "deep")))
+        Assert.Contains("throwAtSiteB", trace)
+        Assert.True(trace.Split('\n').Length < 20, trace)

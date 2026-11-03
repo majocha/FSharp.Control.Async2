@@ -149,8 +149,8 @@ module Cases =
     }
 
 [<MemoryDiagnoser>]
-[<SimpleJob(RunStrategy.Throughput, warmupCount = 1, iterationCount = 1, invocationCount = 1)>]
-//[<SimpleJob(RunStrategy.Throughput)>]
+//[<SimpleJob(RunStrategy.Throughput, warmupCount = 1, iterationCount = 1, invocationCount = 1)>]
+[<SimpleJob(RunStrategy.Throughput)>]
 type Async2Benchmarks () =
 
     // --- Wrapper runner functions ---
