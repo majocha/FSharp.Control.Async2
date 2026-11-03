@@ -42,24 +42,73 @@ module AwaitableHelpers =
 
 open AwaitableHelpers
 
+/// The exception that `ExceptionCache.throwCached` rethrows on this thread now, and the trampoline of the start
+/// whose frame rethrows it. The awaiting parent uses it to tell propagation from a new throw of the same exception
+/// object. The parent of a frame shares its trampoline, so a mark that a finished start leaves behind does not
+/// match a frame of another start.
+[<AbstractClass; Sealed>]
+type internal PropagatingException =
+    [<ThreadStatic; DefaultValue>]
+    static val mutable private error: exn | null
+
+    [<ThreadStatic; DefaultValue>]
+    static val mutable private owner: obj | null
+
+    static member Set(error: exn, owner: obj | null) =
+        PropagatingException.error <- error
+        PropagatingException.owner <- owner
+
+    static member Clear() =
+        PropagatingException.error <- null
+        PropagatingException.owner <- null
+
+    /// True if a frame of the start that owns `owner` rethrows `error` now. Clears the mark.
+    static member Take(error: exn, owner: obj | null) =
+        let propagating =
+            obj.ReferenceEquals(PropagatingException.error, error)
+            && obj.ReferenceEquals(PropagatingException.owner, owner)
+            && not (isNull owner)
+
+        PropagatingException.Clear()
+        propagating
+
 module ExceptionCache =
     let private store = ConditionalWeakTable<exn, ExceptionDispatchInfo>()
 
     let private capture =
         ConditionalWeakTable<exn, ExceptionDispatchInfo>.CreateValueCallback(fun error -> ExceptionDispatchInfo.Capture error)
 
-    /// Rethrows `error` with the dispatch info captured the first time it was seen, so a failure
-    /// propagating through many frames does not grow its stack trace at every frame.
-    let throwCached (error: exn) : 'T =
-        store.GetValue(error, capture).Throw()
+    /// Rethrows `error` with the dispatch info captured where it was thrown, so a failure propagating through
+    /// many frames does not grow its stack trace at every frame. `owner` is the trampoline of the awaiting frame,
+    /// or null for an await outside builder code.
+    ///
+    /// A failure that this function did not rethrow in a frame of the same start is a new throw: from user code,
+    /// from a foreign awaiter, or from a rethrow in a rewritten handler. It replaces the entry, so a new throw of
+    /// the same exception object does not get an old trace. When the parent resumes on another thread, it does
+    /// not see the mark and replaces the entry with the current trace, which is one section longer but is still
+    /// the trace of this throw.
+    let throwCached (owner: obj | null) (error: exn) : 'T =
+        let edi =
+            if PropagatingException.Take(error, owner) then
+                store.GetValue(error, capture)
+            else
+                let edi = ExceptionDispatchInfo.Capture error
+                store.AddOrUpdate(error, edi)
+                edi
+
+        PropagatingException.Set(error, owner)
+        edi.Throw()
         Unchecked.defaultof<_>
+
+    /// For a failure that user code catches. A later throw of the same object is then a new throw.
+    let handled () = PropagatingException.Clear()
 
     /// Awaits `task` and rethrows its failure through the cache. The wait itself never throws: awaiting a
     /// faulted task directly would throw once in the awaiter, again where the suspended frame resumes, and
     /// a third time here, so a failure crossing one frame would cost three throws instead of one.
     /// `UnsafeAwaitAwaiter` only waits for completion and never calls `GetResult`; unlike awaiting a
     /// `ConfigureAwait(SuppressThrowing)` awaitable, it allocates nothing beyond what `Await` does.
-    let inline await (task: Task<'T>) =
+    let inline await (owner: obj | null) (task: Task<'T>) =
         if not task.IsCompleted then
             AsyncHelpers.UnsafeAwaitAwaiter(task.GetAwaiter())
 
@@ -72,8 +121,8 @@ module ExceptionCache =
                 try
                     task.GetAwaiter().GetResult()
                 with error ->
-                    throwCached error
-            | failure -> throwCached failure.InnerExceptions[0]
+                    throwCached owner error
+            | failure -> throwCached owner failure.InnerExceptions[0]
 
 /// The queue of deferred starts and completions of one start from user code, shared by every start nested
 /// in it. The thread that owns it drains the queue before giving it up, so the queue is empty whenever nobody
@@ -246,6 +295,8 @@ module internal Async2StartTrampoline =
 
         // A start that suspended still has frames that hold its trampoline.
         if task.IsCompleted then
+            // The next start can reuse the trampoline, so its frames must not match a mark that this start left.
+            PropagatingException.Clear()
             Async2Trampoline.Return trampoline
 
         task
@@ -337,7 +388,7 @@ module Async2Builder =
         cancellationToken.ThrowIfCancellationRequested()
 
     let inline ofAsync2 (computation: Async2<'T>) =
-        Source(fun ct -> computation.StartTrampolined ct |> ExceptionCache.await)
+        Source(fun ct -> computation.StartTrampolined ct |> ExceptionCache.await null)
 
 open Async2Builder
 
@@ -373,6 +424,7 @@ type Async2Builder() =
             try
                 body ctx
             with error ->
+                ExceptionCache.handled ()
                 check ctx.CancellationToken
                 handler error ctx
 
@@ -426,7 +478,7 @@ type Async2Builder() =
     member inline _.Source(computation: Async2<'T>) = computation
 
     member inline _.ReturnFrom(computation: Async2<'T>) : Async2Code<_, 'T> =
-        fun ctx -> computation.StartNested(ctx.CancellationToken, ctx.Trampoline) |> ExceptionCache.await
+        fun ctx -> computation.StartNested(ctx.CancellationToken, ctx.Trampoline) |> ExceptionCache.await ctx.Trampoline
 
     member inline _.ReturnFromFinal(computation: Async2<'T>) : Async2Code<_, 'T> =
         fun ctx ->
@@ -443,7 +495,7 @@ type Async2Builder() =
                 let mutable next = ValueSome computation.Invocation
 
                 while next.IsSome do
-                    result <- next.Value ctx |> ExceptionCache.await
+                    result <- next.Value ctx |> ExceptionCache.await ctx.Trampoline
                     next <- tail.TryTake()
 
                 result
@@ -451,7 +503,7 @@ type Async2Builder() =
     member inline _.Bind(computation: Async2<'T>, [<InlineIfLambda>] continuation) : Async2Code<'R, 'U> =
         fun ctx ->
             check ctx.CancellationToken
-            let result = computation.StartNested(ctx.CancellationToken, ctx.Trampoline) |> ExceptionCache.await
+            let result = computation.StartNested(ctx.CancellationToken, ctx.Trampoline) |> ExceptionCache.await ctx.Trampoline
             continuation result ctx
 
     member inline _.MergeSources(left: Async2<'A>, [<InlineIfLambda>] right: Source<'B>) =

@@ -1044,3 +1044,80 @@ module AsyncAwaitStackTraceTests =
         let e = runAndCaptureException (async2 { do! Async2.Await(TaskWrapper(level2Task())) })
 
         checkTrace e
+/// The exception cache keys on the exception object. A new throw of the same object must not get the trace
+/// of an old throw, and a deep failure must keep a short trace.
+module ExceptionCacheTests =
+
+    open System.Runtime.CompilerServices
+
+    [<MethodImpl(MethodImplOptions.NoInlining)>]
+    let throwAtSiteA (error: exn) : int = raise error
+
+    [<MethodImpl(MethodImplOptions.NoInlining)>]
+    let throwAtSiteB (error: exn) : int = raise error
+
+    let rec failingChain depth (thrower: unit -> int) =
+        async2 {
+            if depth = 0 then
+                return thrower ()
+            else
+                let! x = failingChain (depth - 1) thrower
+                return x + 1
+        }
+
+    let traceOf (computation: Async2<'T>) =
+        let ae = Assert.Throws<AggregateException>(fun () -> (Async2.StartImmediateAsTask computation).Wait())
+        ae.InnerException.StackTrace
+
+    let assertSiteB (trace: string) =
+        Assert.Contains("throwAtSiteB", trace)
+        Assert.DoesNotContain("throwAtSiteA", trace)
+
+    [<Theory; InlineData(2); InlineData(100)>]
+    let ``New throw after a failure reached the top gets a new trace`` (depth: int) =
+        let error = InvalidOperationException "shared"
+        traceOf (failingChain depth (fun () -> throwAtSiteA error)) |> ignore
+        traceOf (failingChain depth (fun () -> throwAtSiteB error)) |> assertSiteB
+
+    [<Theory; InlineData(2); InlineData(100)>]
+    let ``New throw after a nested catch gets a new trace`` (depth: int) =
+        let error = InvalidOperationException "shared"
+
+        async2 {
+            try
+                return! failingChain depth (fun () -> throwAtSiteA error)
+            with _ ->
+                return 0
+        }
+        |> Async2.StartImmediateAsTask
+        |> _.Wait()
+
+        traceOf (failingChain depth (fun () -> throwAtSiteB error)) |> assertSiteB
+
+    [<Theory; InlineData(2); InlineData(100)>]
+    let ``New throw in a foreign task gets a new trace`` (depth: int) =
+        let error = InvalidOperationException "shared"
+        traceOf (failingChain depth (fun () -> throwAtSiteA error)) |> ignore
+
+        // Async2 frames above the foreign task await its failure.
+        let foreign = async2 { return! Task.Run(fun () -> throwAtSiteB error) }
+
+        let chained =
+            let rec above depth =
+                async2 {
+                    if depth = 0 then
+                        return! foreign
+                    else
+                        let! x = above (depth - 1)
+                        return x + 1
+                }
+
+            above depth
+
+        traceOf chained |> assertSiteB
+
+    [<Fact>]
+    let ``Deep failure keeps a short trace`` () =
+        let trace = traceOf (failingChain 1000 (fun () -> throwAtSiteB (InvalidOperationException "deep")))
+        Assert.Contains("throwAtSiteB", trace)
+        Assert.True(trace.Split('\n').Length < 20, trace)
