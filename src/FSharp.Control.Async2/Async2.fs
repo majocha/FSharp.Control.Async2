@@ -246,7 +246,7 @@ type Async2 =
         let ct = getToken cancellationToken
         startAsTask startOnThreadPool ct computation taskCreationOptions
 
-    static member StartChildAsTask(computation, ?taskCreationOptions) =
+    static member StartChildAsTask(computation: Async2<'T>, ?taskCreationOptions: TaskCreationOptions) : Async2<Task<'T>> =
         async2 {
             let! ct = CurrentCancellationToken
             return startAsTask startImmediate ct computation taskCreationOptions
@@ -302,6 +302,9 @@ type Async2 =
                     started |> onCompleted (fun _ -> link.Dispose())
                     return awaitChildWithTimeout childCancellation started timeout
             }
+
+    static member Parallel(computations: seq<Async2<'T>>) : Async2<'T array> =
+        Async2.Parallel(computations, ?maxDegreeOfParallelism = None)
 
     static member Parallel
         (computations: seq<Async2<'T>>, ?maxDegreeOfParallelism: int)
@@ -599,8 +602,10 @@ type Async2 =
             return! completion.Task
         }
 
-    static member AsBeginEnd(computation: 'Arg -> Async2<'T>) =
-        let beginAction (arg: 'Arg, callback: AsyncCallback, state: obj) =
+    static member AsBeginEnd<'Arg, 'T>
+        (computation: 'Arg -> Async2<'T>)
+        : ('Arg * AsyncCallback * objnull -> IAsyncResult) * (IAsyncResult -> 'T) * (IAsyncResult -> unit) =
+        let beginAction (arg: 'Arg, callback: AsyncCallback, _state: objnull) =
             let task = Async2.StartAsTask(computation arg)
             task |> onCompleted (fun _ -> callback.Invoke task)
             task :> IAsyncResult
@@ -724,23 +729,29 @@ module CommonExtensions =
 
 [<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
 module Async2 =
+    [<CompiledName("Result")>]
     let inline result (value: 'T) : Async2<'T> = async2 { return value }
 
-    let inline map (mapping: 'T -> 'U) (computation: Async2<'T>) : Async2<'U> =
+    [<CompiledName("Map")>]
+    let inline map ([<InlineIfLambda>] mapping: 'T -> 'U) (computation: Async2<'T>) : Async2<'U> =
         async2 {
             let! result = computation
             return mapping result
         }
 
-    let inline bind (binder: 'T -> Async2<'U>) (computation: Async2<'T>) : Async2<'U> =
+    [<CompiledName("Bind")>]
+    let inline bind ([<InlineIfLambda>] binder: 'T -> Async2<'U>) (computation: Async2<'T>) : Async2<'U> =
         async2 {
             let! result = computation
             return! binder result
         }
 
+    [<CompiledName("Ignore")>]
+    [<RequiresExplicitTypeArguments>]
     let inline ignore<'T> (computation: Async2<'T>) : Async2<unit> =
         Async2.Ignore computation
 
+    [<CompiledName("CatchWith")>]
     let catchWith (handler: exn -> 'T) (computation: Async2<'T>) : Async2<'T> =
         async2 {
             try 
@@ -750,6 +761,7 @@ module Async2 =
                 return handler error
         }
 
+    [<CompiledName("Catch")>]
     let catch (computation: Async2<'T>) : Async2<Result<'T, exn>> =
         async2 {
             try
@@ -760,20 +772,24 @@ module Async2 =
                 return Error error
         }
 
+    [<CompiledName("Empty")>]
     let empty : Async2<unit> =
         async2 { return () }
 
+    [<CompiledName("SequentialDo")>]
     let sequentialDo (computations: seq<Async2<unit>>) : Async2<unit> =
         async2 {
             for computation in computations do
                 do! computation
         }
 
+    [<CompiledName("ParallelLimit")>]
     let parallelLimit
         (maxDegreeOfParallelism: int)
         (computations: seq<Async2<'T>>)
         : Async2<'T array> =
         Async2.Parallel(computations, maxDegreeOfParallelism = maxDegreeOfParallelism)
 
-    let parallelDoLimit maxDegreeOfParallelism (computations: seq<Async2<'T>>) : Async2<unit> =
+    [<CompiledName("ParallelDoLimit")>]
+    let parallelDoLimit (maxDegreeOfParallelism: int) (computations: seq<Async2<unit>>) : Async2<unit> =
         parallelLimit maxDegreeOfParallelism computations |> Async2.Ignore
