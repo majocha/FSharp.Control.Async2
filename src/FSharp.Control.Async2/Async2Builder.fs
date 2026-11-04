@@ -49,18 +49,18 @@ module AwaitableHelpers =
 
 open AwaitableHelpers
 
-/// The state threaded through builder code: the trampoline of the start, which holds its cancellation token. The
-/// frames of a start that do not run in a tail-call chain get the trampoline itself as their context. A frame that
-/// runs in a tail-call chain gets the box of the chain, which a final `return!` hands its callee to. It is a
-/// reference, so a suspension keeps one field for it.
-[<AllowNullLiteral(false); System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)>]
-type Async2Context internal (trampoline: Async2Trampoline) =
-    /// A trampoline cannot pass itself to this constructor, so `Async2Trampoline.Create` sets it.
-    let mutable trampoline = trampoline
+/// The state threaded through builder code: the cancellation token and the trampoline of the start. The frames of a
+/// start that do not run in a tail-call chain get the trampoline itself as their context. A frame that runs in a
+/// tail-call chain gets the box of the chain, which a final `return!` hands its callee to. It is a reference, so a
+/// suspension keeps one field for it.
+[<AbstractClass; AllowNullLiteral(false); System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)>]
+type Async2Context internal (cancellationToken: CancellationToken) =
+    /// The token of the start. Every start nested in it runs with the same token. Builder code reads it at every
+    /// step, so it is a field of the context.
+    member _.CancellationToken = cancellationToken
 
-    member _.Trampoline = trampoline
-    member _.CancellationToken = trampoline.Token
-    member internal _.SetTrampoline(owner: Async2Trampoline) = trampoline <- owner
+    /// The trampoline of the start. Builder code reads it only to start a nested computation.
+    abstract Trampoline: Async2Trampoline
 
 /// The queue of deferred starts and completions of one start from user code, shared by every start nested
 /// in it. The thread that owns it drains the queue before giving it up, so the queue is empty whenever nobody
@@ -71,10 +71,11 @@ type Async2Context internal (trampoline: Async2Trampoline) =
 /// nested start owns the trampoline there and drains it before control goes back to that code.
 ///
 /// A new trampoline is owned by the thread that creates it. Each start from user code creates one, and every
-/// frame of the start can keep it, so it is never reused for another start.
+/// frame of the start can keep it, so it is never reused for another start. It is also the context of the frames of
+/// the start that do not run in a tail-call chain, so a start allocates no separate context.
 and [<Sealed; System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)>]
-    Async2Trampoline private (cancellationToken: CancellationToken) =
-    inherit Async2Context(Unchecked.defaultof<_>)
+    Async2Trampoline internal (cancellationToken: CancellationToken) =
+    inherit Async2Context(cancellationToken)
 
     let mutable queue: Queue<unit -> unit> | null = null
 
@@ -84,16 +85,7 @@ and [<Sealed; System.ComponentModel.EditorBrowsable(System.ComponentModel.Editor
     /// The managed thread id of the owner, or 0.
     let mutable owner = Environment.CurrentManagedThreadId
 
-    /// A new trampoline for a start with token `ct`. It is also the context of the frames of the start that do not
-    /// run in a tail-call chain, so a start allocates no separate context.
-    static member internal Create(ct: CancellationToken) =
-        let created = Async2Trampoline ct
-        created.SetTrampoline created
-        created
-
-    /// The token of the start. Every start nested in it runs with the same token, so frames read it here and the
-    /// state that their suspensions keep stays small.
-    member internal _.Token = cancellationToken
+    override this.Trampoline = this
 
     /// The failure that `ExceptionCache.throwCached` rethrew last in a frame of this start, or null. Only the
     /// mark holder uses its field.
@@ -170,7 +162,7 @@ module ExceptionCache =
         edi
 
     /// Rethrows `error` with the dispatch info captured where it was thrown, so a failure propagating through
-    /// many frames does not grow its stack trace at every frame. `owner` is the trampoline of the awaiting frame,
+    /// many frames does not grow its stack trace at every frame. `owner` is the context of the awaiting frame,
     /// or null for an await outside builder code.
     ///
     /// The trampoline holds the failure that this function rethrew last in a frame of the start, so the awaiting
@@ -178,7 +170,12 @@ module ExceptionCache =
     /// rethrows the same object propagates the failure. Any other failure is a new throw: from user code, from a
     /// foreign awaiter, or a throw after a handler handled the failure. It replaces the entry, so a new throw of
     /// the same exception object does not get an old trace.
-    let throwCached (owner: Async2Trampoline | null) (error: exn) : 'T =
+    let throwCached (owner: Async2Context | null) (error: exn) : 'T =
+        let owner: Async2Trampoline | null =
+            match owner with
+            | null -> null
+            | ctx -> ctx.Trampoline
+
         let edi =
             match owner with
             | null -> captureNew error
@@ -198,7 +195,10 @@ module ExceptionCache =
     /// a third time here, so a failure crossing one frame would cost three throws instead of one.
     /// `UnsafeAwaitAwaiter` only waits for completion and never calls `GetResult`; unlike awaiting a
     /// `ConfigureAwait(SuppressThrowing)` awaitable, it allocates nothing beyond what `Await` does.
-    let inline await (owner: Async2Trampoline | null) (task: Task<'T>) =
+    ///
+    /// `owner` is the context and not the trampoline: the context stays alive across the wait anyway, and the
+    /// trampoline is needed only for a failure.
+    let inline await (owner: Async2Context | null) (task: Task<'T>) =
         if not task.IsCompleted then
             AsyncHelpers.UnsafeAwaitAwaiter(task.GetAwaiter())
 
@@ -231,7 +231,7 @@ type Async2Invocation<'R> = Async2Context -> Task<'R>
 /// frame matters, and it completes the task of the chain. So a suspension costs a continuation on the frame's task
 /// instead of a suspension and a resumption of a waiting frame.
 and [<Sealed; NoEquality; NoComparison; System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)>] TailBox<'R>(trampoline: Async2Trampoline) =
-    inherit Async2Context(trampoline)
+    inherit Async2Context(trampoline.CancellationToken)
 
     let mutable next: Async2Invocation<'R> voption = ValueNone
     let mutable context: ExecutionContext | null = null
@@ -243,6 +243,8 @@ and [<Sealed; NoEquality; NoComparison; System.ComponentModel.EditorBrowsable(Sy
     /// returns the task of its last frame.
     let mutable completion: TaskCompletionSource<'R> | null = null
     let mutable onPendingCompleted: Action | null = null
+
+    override _.Trampoline = trampoline
 
     /// Hands over the computation that runs after the calling frame finishes.
     member _.Set(invocation: Async2Invocation<'R>) =
@@ -387,7 +389,7 @@ module internal Async2StartTrampoline =
 
     /// Starts as the owner of a new trampoline, so the caller observes all synchronous progress.
     let startIsolated (invocation: Async2Invocation<'T>) ct =
-        startOwned (Async2Trampoline.Create ct) invocation
+        startOwned (Async2Trampoline ct) invocation
 
     /// A start nested in another one, which awaits it: it shares the parent's trampoline. When another thread owns
     /// that one, the parent runs concurrently with the owner, and the start gets a trampoline of its own. That
@@ -403,7 +405,7 @@ module internal Async2StartTrampoline =
         elif trampoline.TryOwn() then
             trampoline.RunAsOwner(fun () -> invoke invocation ctx)
         else
-            let own = Async2Trampoline.Create trampoline.Token
+            let own = Async2Trampoline trampoline.CancellationToken
             own.ShareMarkOf trampoline
             startOwned own invocation
 
@@ -469,7 +471,7 @@ module Async2Builder =
 
     /// Starts `computation` nested in the start of the frame with context `ctx`, and waits for its result.
     let inline awaitNested (ctx: Async2Context) (computation: Async2<'T>) =
-        computation.StartNested ctx.Trampoline |> ExceptionCache.await ctx.Trampoline
+        computation.StartNested ctx.Trampoline |> ExceptionCache.await ctx
 
 open Async2Builder
 
@@ -575,7 +577,7 @@ type Async2Builder() =
                 Unchecked.defaultof<_>
             | _ ->
                 // Start a chain that runs the callee, then each computation it hands over in turn.
-                TailBox(ctx.Trampoline).Start computation.Invocation |> ExceptionCache.await ctx.Trampoline
+                TailBox(ctx.Trampoline).Start computation.Invocation |> ExceptionCache.await ctx
 
     member inline _.Bind(computation: Async2<'T>, [<InlineIfLambda>] continuation) : Async2Code<'U> =
         fun ctx ->
