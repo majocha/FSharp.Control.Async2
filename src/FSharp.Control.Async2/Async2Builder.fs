@@ -42,6 +42,19 @@ module AwaitableHelpers =
 
 open AwaitableHelpers
 
+/// The state threaded through builder code: the trampoline of the start, which holds its cancellation token. The
+/// frames of a start that do not run in a tail-call chain get the trampoline itself as their context. A frame that
+/// runs in a tail-call chain gets the box of the chain, which a final `return!` hands its callee to. It is a
+/// reference, so a suspension keeps one field for it.
+[<AllowNullLiteral(false); System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)>]
+type Async2Context internal (trampoline: Async2Trampoline) =
+    /// A trampoline cannot pass itself to this constructor, so `Async2Trampoline.Create` sets it.
+    let mutable trampoline = trampoline
+
+    member _.Trampoline = trampoline
+    member _.CancellationToken = trampoline.Token
+    member internal _.SetTrampoline(owner: Async2Trampoline) = trampoline <- owner
+
 /// The queue of deferred starts and completions of one start from user code, shared by every start nested
 /// in it. The thread that owns it drains the queue before giving it up, so the queue is empty whenever nobody
 /// owns it, and only the owner touches the queue. Queued actions handle their own failures and never throw.
@@ -49,10 +62,12 @@ open AwaitableHelpers
 /// It belongs to a start, not to a thread, as in FSharp.Core async. A frame that code outside Async2 resumes
 /// inline, for example from `TaskCompletionSource.SetResult`, is not inside its own start's drain, so its next
 /// nested start owns the trampoline there and drains it before control goes back to that code.
-[<Sealed; AllowNullLiteral; System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)>]
-type Async2Trampoline() =
-    [<ThreadStatic; DefaultValue>]
-    static val mutable private cached: Async2Trampoline
+///
+/// A new trampoline is owned by the thread that creates it. Each start from user code creates one, and every
+/// frame of the start can keep it, so it is never reused for another start.
+and [<Sealed; System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)>]
+    Async2Trampoline private (cancellationToken: CancellationToken) =
+    inherit Async2Context(Unchecked.defaultof<_>)
 
     let mutable queue: Queue<unit -> unit> | null = null
 
@@ -63,15 +78,18 @@ type Async2Trampoline() =
     let mutable markHolder: Async2Trampoline | null = null
 
     /// The managed thread id of the owner, or 0.
-    let mutable owner = 0
+    let mutable owner = Environment.CurrentManagedThreadId
 
-    let mutable cancellationToken = CancellationToken.None
+    /// A new trampoline for a start with token `ct`. It is also the context of the frames of the start that do not
+    /// run in a tail-call chain, so a start allocates no separate context.
+    static member internal Create(ct: CancellationToken) =
+        let created = Async2Trampoline ct
+        created.SetTrampoline created
+        created
 
     /// The token of the start. Every start nested in it runs with the same token, so frames read it here and the
     /// state that their suspensions keep stays small.
-    member _.CancellationToken = cancellationToken
-
-    member internal _.SetCancellationToken(ct: CancellationToken) = cancellationToken <- ct
+    member internal _.Token = cancellationToken
 
     member private this.MarkHolder =
         match markHolder with
@@ -93,12 +111,6 @@ type Async2Trampoline() =
     /// parent sees that a failure of this start propagates.
     member internal this.ShareMarkOf(parent: Async2Trampoline) = markHolder <- parent.MarkHolder
 
-    /// Forgets the failure mark before the trampoline is reused for another start.
-    member internal _.ResetMark() =
-        match markHolder with
-        | null -> propagating <- null
-        | _ -> markHolder <- null
-
     member internal _.IsOwnedHere = Volatile.Read(&owner) = Environment.CurrentManagedThreadId
 
     member internal _.TryOwn() =
@@ -113,24 +125,8 @@ type Async2Trampoline() =
             queue <- created
         | existing -> existing.Enqueue action
 
-    /// A trampoline owned by this thread for a new start: the one the last start on this thread gave back,
-    /// or a new one. A start on another thread may still be releasing the cached one, so it is owned first.
-    static member internal Rent() =
-        let cached = Async2Trampoline.cached
-        Async2Trampoline.cached <- null
-
-        if not (isNull cached) && cached.TryOwn() then
-            cached
-        else
-            let created = Async2Trampoline()
-            created.TryOwn() |> ignore
-            created
-
-    /// Gives back the trampoline of a start that completed. Builder code reaches a trampoline only through the
-    /// frames of its start, and those have all finished, so the next start on this thread can use it.
-    static member internal Return(trampoline: Async2Trampoline) = Async2Trampoline.cached <- trampoline
-
-    /// Runs `action` as the owner, after a successful `TryOwn`, then drains everything queued meanwhile.
+    /// Runs `action` as the owner, after a successful `TryOwn` or on a new trampoline, then drains everything
+    /// queued meanwhile.
     member inline internal this.RunAsOwner([<InlineIfLambda>] action: unit -> 'T) =
         try
             action ()
@@ -212,18 +208,7 @@ module ExceptionCache =
                     throwCached owner error
             | failure -> throwCached owner failure.InnerExceptions[0]
 
-/// The state threaded through builder code: the trampoline of the start, which holds its cancellation token, and, when
-/// the computation was started in a tail-call chain, the box a final `return!` hands its callee to. `'R` is the
-/// result type of the whole computation expression, so a final `return!` is known to produce exactly that type.
-[<Struct; NoEquality; NoComparison; System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)>]
-type Async2Context<'R> = {
-        Trampoline: Async2Trampoline
-        Tail: TailBox<'R> | null
-    }
-    with
-        member ctx.CancellationToken = ctx.Trampoline.CancellationToken
-
-and Async2Invocation<'R> = Async2Context<'R> -> Task<'R>
+type Async2Invocation<'R> = Async2Context -> Task<'R>
 
 /// Runs a tail-call chain: the computation of the final `return!` that started the chain, then each computation that
 /// a frame of the chain hands over with its own final `return!`. A handing frame finishes, so the chain runs on a
@@ -233,10 +218,11 @@ and Async2Invocation<'R> = Async2Context<'R> -> Task<'R>
 /// completion of the frame's task continues the chain on the thread that completes it. Only the outcome of the last
 /// frame matters, and it completes the task of the chain. So a suspension costs a continuation on the frame's task
 /// instead of a suspension and a resumption of a waiting frame.
-and [<Sealed; NoEquality; NoComparison; System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)>] TailBox<'R>() =
-    let mutable next = ValueNone
+and [<Sealed; NoEquality; NoComparison; System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)>] TailBox<'R>(trampoline: Async2Trampoline) =
+    inherit Async2Context(trampoline)
+
+    let mutable next: Async2Invocation<'R> voption = ValueNone
     let mutable context: ExecutionContext | null = null
-    let mutable chainContext = Unchecked.defaultof<Async2Context<'R>>
 
     /// The task of the frame that suspended, while the chain waits for it.
     let mutable pending: Task<'R> | null = null
@@ -273,7 +259,7 @@ and [<Sealed; NoEquality; NoComparison; System.ComponentModel.EditorBrowsable(Sy
 
             let task =
                 try
-                    invocation chainContext
+                    invocation this
                 with error ->
                     Task.FromException<'R> error
 
@@ -326,16 +312,12 @@ and [<Sealed; NoEquality; NoComparison; System.ComponentModel.EditorBrowsable(Sy
         | last -> (nonNull completion).TrySetFromTask last |> ignore
 
     /// Starts the chain with `first` and returns its task.
-    member this.Start(ctx: Async2Context<'R>, first: Async2Invocation<'R>) : Task<'R> =
-        chainContext <- { ctx with Tail = this }
+    member this.Start(first: Async2Invocation<'R>) : Task<'R> =
         next <- ValueSome first
 
         match this.RunInCallerContext() with
         | null -> (nonNull completion).Task
         | last -> last
-
-module Async2Context =
-    let create trampoline = { Trampoline = trampoline; Tail = null }
 
 module internal Async2StartTrampoline =
 
@@ -385,27 +367,19 @@ module internal Async2StartTrampoline =
 
         completion.Task
 
-    let private startOwned (trampoline: Async2Trampoline) (invocation: Async2Invocation<'T>) ct =
-        trampoline.SetCancellationToken ct
-        let task = trampoline.RunAsOwner(fun () -> invoke invocation (Async2Context.create trampoline))
-
-        // A start that suspended still has frames that hold its trampoline.
-        if task.IsCompleted then
-            // The next start can reuse the trampoline, so its frames must not match a failure that this start left.
-            trampoline.ResetMark()
-            Async2Trampoline.Return trampoline
-
-        task
+    /// Starts on a trampoline that this thread created and owns.
+    let private startOwned (trampoline: Async2Trampoline) (invocation: Async2Invocation<'T>) =
+        trampoline.RunAsOwner(fun () -> invoke invocation (trampoline :> Async2Context))
 
     /// Starts as the owner of a new trampoline, so the caller observes all synchronous progress.
     let startIsolated (invocation: Async2Invocation<'T>) ct =
-        startOwned (Async2Trampoline.Rent()) invocation ct
+        startOwned (Async2Trampoline.Create ct) invocation
 
     /// A start nested in another one, which awaits it: it shares the parent's trampoline. When another thread owns
     /// that one, the parent runs concurrently with the owner, and the start gets a trampoline of its own. That
     /// trampoline shares the failure mark of the parent, so a failure that propagates keeps its cached trace.
     let start (trampoline: Async2Trampoline) (invocation: Async2Invocation<'T>) =
-        let ctx = Async2Context.create trampoline
+        let ctx = trampoline :> Async2Context
 
         if trampoline.IsOwnedHere then
             if Async2Trampoline.CanRunInline then
@@ -415,9 +389,9 @@ module internal Async2StartTrampoline =
         elif trampoline.TryOwn() then
             trampoline.RunAsOwner(fun () -> invoke invocation ctx)
         else
-            let own = Async2Trampoline.Rent()
+            let own = Async2Trampoline.Create trampoline.Token
             own.ShareMarkOf trampoline
-            startOwned own invocation trampoline.CancellationToken
+            startOwned own invocation
 
 /// Bound with `let!` in `async2` or `asyncSeq2` to read the token the computation was started with,
 /// without starting another computation the way `Async2.CancellationToken` does.
@@ -477,8 +451,8 @@ type Async2<'T> (invocation: Async2Invocation<'T>) =
     member internal _.StartInIsolatedTrampoline ct =
         Async2StartTrampoline.startIsolated invocation ct
 
-/// Builder code: `'R` is the result type of the whole computation, `'T` the type of this piece.
-type Async2Code<'R, 'T> = Async2Context<'R> -> 'T
+/// Builder code: `'T` is the type of this piece.
+type Async2Code<'T> = Async2Context -> 'T
 
 open Async2BuilderSources
 
@@ -497,31 +471,31 @@ open Async2Builder
 
 type Async2Builder() =
 
-    // The code type of the builder is `Async2Context -> 'T`, i.e. the cancellation token and the tail box
-    // are passed along as state to every delayed continuation.
-    member inline _.Delay([<InlineIfLambda>] generator: unit -> Async2Code<'R, 'T>) : Async2Code<'R, 'T> =
+    // The code type of the builder is `Async2Context -> 'T`: the context of the frame is passed along as state to
+    // every delayed continuation.
+    member inline _.Delay([<InlineIfLambda>] generator: unit -> Async2Code<'T>) : Async2Code<'T> =
         fun ctx ->
             check ctx.CancellationToken
             let code = generator ()
             code ctx
 
-    member inline _.Zero() : Async2Code<_, unit> =
+    member inline _.Zero() : Async2Code<unit> =
         fun ctx ->
             check ctx.CancellationToken
             ()
 
-    member inline _.Return(value: 'T) : Async2Code<_, 'T> =
+    member inline _.Return(value: 'T) : Async2Code<'T> =
         fun ctx ->
             check ctx.CancellationToken
             value
 
-    member inline _.Combine([<InlineIfLambda>] first, [<InlineIfLambda>] second) : Async2Code<_,'T> =
+    member inline _.Combine([<InlineIfLambda>] first, [<InlineIfLambda>] second) : Async2Code<'T> =
         fun ctx ->
             check ctx.CancellationToken
             first (ctx) |> ignore
             second ctx
 
-    member inline _.TryWith ([<InlineIfLambda>] body, [<InlineIfLambda>] handler) : Async2Code<_, 'T> =
+    member inline _.TryWith ([<InlineIfLambda>] body, [<InlineIfLambda>] handler) : Async2Code<'T> =
         fun ctx ->
             check ctx.CancellationToken
             try
@@ -536,7 +510,7 @@ type Async2Builder() =
                 ExceptionCache.handled ctx.Trampoline
                 result
 
-    member inline _.TryFinally ([<InlineIfLambda>] body, [<InlineIfLambda>] compensation) : Async2Code<_, 'T> =
+    member inline _.TryFinally ([<InlineIfLambda>] body, [<InlineIfLambda>] compensation) : Async2Code<'T> =
         fun ctx ->
             try
                 check ctx.CancellationToken
@@ -544,7 +518,7 @@ type Async2Builder() =
             finally
                 compensation ()
 
-    member inline _.Using(resource: 'T :> IDisposable | null, [<InlineIfLambda>] body) : Async2Code<_, 'U> =
+    member inline _.Using(resource: 'T :> IDisposable | null, [<InlineIfLambda>] body) : Async2Code<'U> =
         fun ctx ->
             try
                 check ctx.CancellationToken
@@ -552,54 +526,54 @@ type Async2Builder() =
             finally
                 if not (isNull (box resource)) then resource.Dispose()
 
-    member inline _.While(guard: unit -> bool, [<InlineIfLambda>] body) : Async2Code<_, unit> =
+    member inline _.While(guard: unit -> bool, [<InlineIfLambda>] body) : Async2Code<unit> =
         fun ctx ->
             while guard () do
                 check ctx.CancellationToken
                 body ctx
             check ctx.CancellationToken
 
-    member inline _.For(sequence: seq<'T>, [<InlineIfLambda>] body) : Async2Code<_, unit> =
+    member inline _.For(sequence: seq<'T>, [<InlineIfLambda>] body) : Async2Code<unit> =
         fun ctx ->
             for item in sequence do
                 check ctx.CancellationToken
                 body item ctx
             check ctx.CancellationToken
 
-    member inline _.Bind([<InlineIfLambda>] source: Source<'T>, [<InlineIfLambda>] continuation) : Async2Code<_, 'U> =
+    member inline _.Bind([<InlineIfLambda>] source: Source<'T>, [<InlineIfLambda>] continuation) : Async2Code<'U> =
         fun ctx ->
             check ctx.CancellationToken
             continuation (source.Invoke ctx.CancellationToken) ctx
 
-    member inline _.ReturnFrom([<InlineIfLambda>] source: Source<'T>) : Async2Code<_, 'T> =
+    member inline _.ReturnFrom([<InlineIfLambda>] source: Source<'T>) : Async2Code<'T> =
         fun ctx -> source.Invoke ctx.CancellationToken
 
-    member inline _.ReturnFromFinal([<InlineIfLambda>] source: Source<'T>) : Async2Code<_, 'T> =
+    member inline _.ReturnFromFinal([<InlineIfLambda>] source: Source<'T>) : Async2Code<'T> =
         fun ctx -> source.Invoke ctx.CancellationToken
 
     member inline _.MergeSources([<InlineIfLambda>] left: Source<'A>, [<InlineIfLambda>] right: Source<'B>) =
         merge left right
 
-    member inline _.Run([<InlineIfLambda>] code: Async2Code<'T, 'T>) : Async2<'T> =
+    member inline _.Run([<InlineIfLambda>] code: Async2Code<'T>) : Async2<'T> =
         Async2(fun ctx -> __runtimeAsyncReturn(code ctx))
 
     member inline _.Source(computation: Async2<'T>) = computation
 
-    member inline _.ReturnFrom(computation: Async2<'T>) : Async2Code<_, 'T> =
+    member inline _.ReturnFrom(computation: Async2<'T>) : Async2Code<'T> =
         fun ctx -> computation.StartNested ctx.Trampoline |> ExceptionCache.await ctx.Trampoline
 
-    member inline _.ReturnFromFinal(computation: Async2<'T>) : Async2Code<_, 'T> =
+    member inline _.ReturnFromFinal(computation: Async2<'T>) : Async2Code<'T> =
         fun ctx ->
-            match ctx.Tail with
-            | null ->
-                // Start a chain that runs the callee, then each computation it hands over in turn.
-                TailBox().Start(ctx, computation.Invocation) |> ExceptionCache.await ctx.Trampoline
-            | tail ->
+            match ctx with
+            | :? TailBox<'T> as tail ->
                 // This frame runs in a tail-call chain: hand the callee over and let the frame finish.
                 tail.Set computation.Invocation
                 Unchecked.defaultof<_>
+            | _ ->
+                // Start a chain that runs the callee, then each computation it hands over in turn.
+                TailBox(ctx.Trampoline).Start computation.Invocation |> ExceptionCache.await ctx.Trampoline
 
-    member inline _.Bind(computation: Async2<'T>, [<InlineIfLambda>] continuation) : Async2Code<'R, 'U> =
+    member inline _.Bind(computation: Async2<'T>, [<InlineIfLambda>] continuation) : Async2Code<'U> =
         fun ctx ->
             check ctx.CancellationToken
             let result = computation.StartNested ctx.Trampoline |> ExceptionCache.await ctx.Trampoline
@@ -617,7 +591,7 @@ type Async2Builder() =
 [<AutoOpen>]
 module Async2BuilderAsyncDisposableExtensions =
     type Async2Builder with
-        member inline _.Using(resource: 'T :> IAsyncDisposable | null, [<InlineIfLambda>] body) : Async2Code<_, 'U> =
+        member inline _.Using(resource: 'T :> IAsyncDisposable | null, [<InlineIfLambda>] body) : Async2Code<'U> =
             fun ctx ->
                 try
                     check ctx.CancellationToken
@@ -626,7 +600,7 @@ module Async2BuilderAsyncDisposableExtensions =
                     if not (isNull (box resource)) then
                         resource.DisposeAsync() |> AsyncHelpers.Await
 
-        member inline this.For(sequence: IAsyncEnumerable<'T>, [<InlineIfLambda>] body) : Async2Code<_, unit> =
+        member inline this.For(sequence: IAsyncEnumerable<'T>, [<InlineIfLambda>] body) : Async2Code<unit> =
             fun ctx ->
                 this.Using
                     (sequence.GetAsyncEnumerator ctx.CancellationToken,

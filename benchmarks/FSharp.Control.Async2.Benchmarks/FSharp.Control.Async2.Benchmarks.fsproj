@@ -15,6 +15,7 @@
     <Compile Include="Mailbox.fs" />
     <Compile Include="Retry.fs" />
     <Compile Include="Pagination.fs" />
+    <Compile Include="TopLevelStarts.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
   <ItemGroup>
