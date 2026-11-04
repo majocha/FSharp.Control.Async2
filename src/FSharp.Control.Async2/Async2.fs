@@ -1,4 +1,3 @@
-
 // Copyright (c) Microsoft Corporation. All Rights Reserved.
 // Runtime-async adaptation for Async2.
 
@@ -8,6 +7,7 @@ open System
 open System.IO
 open System.Net
 open System.Reflection
+open System.Runtime.ExceptionServices
 open System.Threading
 open System.Threading.Tasks
 
@@ -42,11 +42,22 @@ module internal Async2RuntimeHelpers =
     let getToken token =
         defaultArg token (getDefaultCancellationToken ())
 
-    let startOnThreadPool cancellationToken (computation: Async2<_>) =
-        Task.Run<'T>(fun () -> computation.StartInIsolatedTrampoline cancellationToken)
+    /// Starts `computation` on this thread, with a trampoline of its own.
+    let startImmediate cancellationToken (computation: Async2<'T>) =
+        Async2StartTrampoline.startIsolated computation.Invocation cancellationToken
 
-    let startImmediate cancellationToken (computation: Async2<_>) =
-        computation.StartInIsolatedTrampoline cancellationToken
+    let startOnThreadPool cancellationToken (computation: Async2<'T>) =
+        Task.Run<'T>(fun () -> startImmediate cancellationToken computation)
+
+    /// Runs `continuation` when `task` completes, on the thread that completes it, whatever the outcome.
+    let onCompleted (continuation: Task<'T> -> unit) (task: Task<'T>) =
+        task.ContinueWith(
+            Action<Task<'T>>(continuation),
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default
+        )
+        |> ignore
 
     let cancellationTokenAsync = Async2(fun ctx -> Task.FromResult(ctx.CancellationToken))
 
@@ -72,13 +83,7 @@ module internal Async2RuntimeHelpers =
         | Some (options: TaskCreationOptions) ->
             let completion = TaskCompletionSource<'T>(options)
             let running: Task<'T> = start cancellationToken computation
-            running.ContinueWith(
-                Action<Task<'T>>(fun running -> completion.TrySetFromTask running |> ignore),
-                CancellationToken.None,
-                TaskContinuationOptions.ExecuteSynchronously,
-                TaskScheduler.Default
-            )
-            |> ignore
+            running |> onCompleted (fun running -> completion.TrySetFromTask running |> ignore)
             completion.Task
 
     /// The result of a callback-driven operation, settled exactly once by whichever comes first:
@@ -168,7 +173,6 @@ module internal Async2RuntimeHelpers =
             }
 
 open Async2RuntimeHelpers
-open System.Runtime.ExceptionServices
 
 [<Sealed; CompiledName("FSharpAsync2")>]
 type Async2 =
@@ -194,7 +198,7 @@ type Async2 =
                 && Thread.CurrentThread.IsThreadPoolThread
                 && Async2Builder.isAlreadyBackground ()
             then
-                computation.StartInIsolatedTrampoline ct
+                computation |> startImmediate ct
             else
                 computation |> startOnThreadPool ct
 
@@ -224,7 +228,7 @@ type Async2 =
     static member RunSynchronouslyImmediate
         (computation: Async2<'T>, ?cancellationToken: CancellationToken)
         =
-        let pending = computation.StartInIsolatedTrampoline(getToken cancellationToken)
+        let pending = computation |> startImmediate (getToken cancellationToken)
         pending.GetAwaiter().GetResult()
 
     static member Start(computation: Async2<unit>, ?cancellationToken: CancellationToken) =
@@ -295,13 +299,7 @@ type Async2 =
                     let childCancellation = new CancellationTokenSource()
                     let link = ct.Register(fun () -> childCancellation.Cancel())
                     let started = computation |> startOnThreadPool childCancellation.Token
-                    started.ContinueWith(
-                        Action<Task<'T>>(fun _ -> link.Dispose()),
-                        CancellationToken.None,
-                        TaskContinuationOptions.ExecuteSynchronously,
-                        TaskScheduler.Default
-                    )
-                    |> ignore
+                    started |> onCompleted (fun _ -> link.Dispose())
                     return awaitChildWithTimeout childCancellation started timeout
             }
 
@@ -339,7 +337,7 @@ type Async2 =
                                 cts.Cancel()
                         | _ -> ()
                     }
-                    Task.Run<unit>(fun () -> worker.StartInIsolatedTrampoline innerToken)))
+                    worker |> startOnThreadPool innerToken))
 
             firstFailure |> Option.iter _.Throw()
             return results
@@ -429,33 +427,17 @@ type Async2 =
             let completion = TaskCompletionSource<'T>(TaskCreationOptions.RunContinuationsAsynchronously)
             let mutable completed = 0
 
-            let once action value =
+            // Only the first continuation, or cancellation, completes the computation.
+            let once (complete: unit -> bool) =
                 if Interlocked.CompareExchange(&completed, 1, 0) = 0 then
-                    action value |> ignore
+                    complete () |> ignore
 
-            use registration =
-                ct.Register(
-                    Action(fun () ->
-                        once
-                            (fun (error: OperationCanceledException) ->
-                                completion.TrySetCanceled(error.CancellationToken) |> ignore)
-                            (OperationCanceledException ct))
-                )
+            use registration = ct.Register(fun () -> once (fun () -> completion.TrySetCanceled ct))
 
-            callback(
-                (fun value ->
-                    once
-                        (fun (value: 'T) -> completion.TrySetResult(value) |> ignore)
-                        value),
-                (fun error ->
-                    once
-                        (fun (error: exn) -> completion.TrySetException(error) |> ignore)
-                        error),
-                (fun error ->
-                    once
-                        (fun (error: OperationCanceledException) ->
-                            completion.TrySetCanceled(error.CancellationToken) |> ignore)
-                        error)
+            callback (
+                (fun value -> once (fun () -> completion.TrySetResult value)),
+                (fun error -> once (fun () -> completion.TrySetException error)),
+                (fun error -> once (fun () -> completion.TrySetCanceled error.CancellationToken))
             )
 
             return! completion.Task
@@ -620,13 +602,7 @@ type Async2 =
     static member AsBeginEnd(computation: 'Arg -> Async2<'T>) =
         let beginAction (arg: 'Arg, callback: AsyncCallback, state: obj) =
             let task = Async2.StartAsTask(computation arg)
-            task.ContinueWith(
-                Action<Task<'T>>(fun _ -> callback.Invoke task),
-                CancellationToken.None,
-                TaskContinuationOptions.ExecuteSynchronously,
-                TaskScheduler.Default
-            )
-            |> ignore
+            task |> onCompleted (fun _ -> callback.Invoke task)
             task :> IAsyncResult
 
         let endAction (result: IAsyncResult) =
@@ -652,7 +628,7 @@ type Async2 =
             ?cancellationToken: CancellationToken
         ) =
         let cancellationToken = getToken cancellationToken
-        let task = computation.StartInIsolatedTrampoline cancellationToken
+        let task = computation |> startImmediate cancellationToken
 
         let invoke () =
             let result =
@@ -672,13 +648,7 @@ type Async2 =
         if task.IsCompleted then
             invoke ()
         else
-            task.ContinueWith(
-                Action<Task<'T>>(fun _ -> invoke ()),
-                CancellationToken.None,
-                TaskContinuationOptions.ExecuteSynchronously,
-                TaskScheduler.Default
-            )
-            |> ignore
+            task |> onCompleted (fun _ -> invoke ())
 
     static member StartImmediate(computation: Async2<unit>, ?cancellationToken: CancellationToken) =
         let ct = getToken cancellationToken
@@ -724,23 +694,19 @@ module CommonExtensions =
             let count = defaultArg count (buffer.Length - offset)
             Async2.StartTaskImmediate(fun ct -> stream.WriteAsync(buffer, offset, count, ct))
 
+    /// An observer that passes each value to `callback` and ignores errors and completion.
+    let private observerOf (callback: 'T -> unit) =
+        { new IObserver<'T> with
+            member _.OnNext(value) = callback value
+            member _.OnError(_) = ()
+            member _.OnCompleted() = () }
+
     type IObservable<'T> with
         member observable.Add(callback: 'T -> unit) =
-            observable.Subscribe(
-                { new IObserver<'T> with
-                    member _.OnNext(value) = callback value
-                    member _.OnError(_) = ()
-                    member _.OnCompleted() = () }
-            )
-            |> ignore
+            observable.Subscribe(observerOf callback) |> ignore
 
         member observable.Subscribe(callback: 'T -> unit) =
-            observable.Subscribe(
-                { new IObserver<'T> with
-                    member _.OnNext(value) = callback value
-                    member _.OnError(_) = ()
-                    member _.OnCompleted() = () }
-            )
+            observable.Subscribe(observerOf callback)
 
     type WebRequest with
         member request.AsyncGetResponse() =

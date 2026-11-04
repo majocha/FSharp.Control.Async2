@@ -19,10 +19,7 @@ module RuntimeAsyncBuilderHelpers =
     let inline startAwaitable awaitable =
         // Make sure the delegate captures only started awaitables to make MergeSources concurrent.
         let awaiter = Awaitable.getAwaiter awaitable
-        Started(fun () ->
-            if not (Awaiter.isCompleted awaiter) then
-                AsyncHelpers.UnsafeAwaitAwaiter awaiter
-            Awaiter.getResult awaiter)
+        Started(fun () -> Awaiter.await awaiter)
 
 open RuntimeAsyncBuilderHelpers
 

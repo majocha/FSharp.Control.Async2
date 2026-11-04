@@ -37,6 +37,13 @@ module AwaitableHelpers =
         let inline unsafeOnCompleted (awaiter: Awaiter<_, _>) continuation =
             awaiter.UnsafeOnCompleted continuation
 
+        /// Waits for `awaiter` to complete and returns its result. Only runtime-async code can call it.
+        let inline await (awaiter: Awaiter<_, _>) =
+            if not (isCompleted awaiter) then
+                AsyncHelpers.UnsafeAwaitAwaiter awaiter
+
+            getResult awaiter
+
     module Awaitable =
         let inline getAwaiter (awaitable: Awaitable<_, _, _>) = awaitable.GetAwaiter()
 
@@ -71,10 +78,7 @@ and [<Sealed; System.ComponentModel.EditorBrowsable(System.ComponentModel.Editor
 
     let mutable queue: Queue<unit -> unit> | null = null
 
-    /// The failure that `ExceptionCache.throwCached` rethrew last in a frame of this start, or null.
-    let mutable propagating: exn | null = null
-
-    /// The trampoline that holds the failure for this one, or null when this one holds it.
+    /// The trampoline that holds the failure mark for this one, or null when this one holds it.
     let mutable markHolder: Async2Trampoline | null = null
 
     /// The managed thread id of the owner, or 0.
@@ -91,21 +95,22 @@ and [<Sealed; System.ComponentModel.EditorBrowsable(System.ComponentModel.Editor
     /// state that their suspensions keep stays small.
     member internal _.Token = cancellationToken
 
+    /// The failure that `ExceptionCache.throwCached` rethrew last in a frame of this start, or null. Only the
+    /// mark holder uses its field.
+    [<DefaultValue>]
+    val mutable private propagating: exn | null
+
     member private this.MarkHolder =
         match markHolder with
         | null -> this
         | holder -> holder
 
-    member private _.Mark
-        with get () = propagating
-        and set (value: exn | null) = propagating <- value
-
     /// The failure that `ExceptionCache.throwCached` rethrew last in a frame of this start, or null. The frames
     /// of one start run one after another, and the completion of a frame's task orders its write before the read
     /// of the parent that awaits it, also when the parent resumes on another thread.
     member internal this.Propagating
-        with get () = this.MarkHolder.Mark
-        and set (value: exn | null) = this.MarkHolder.Mark <- value
+        with get () = this.MarkHolder.propagating
+        and set (value: exn | null) = this.MarkHolder.propagating <- value
 
     /// For a nested start that cannot share the trampoline of its parent: it shares the failure mark, so the
     /// parent sees that a failure of this start propagates.
@@ -155,8 +160,14 @@ and [<Sealed; System.ComponentModel.EditorBrowsable(System.ComponentModel.Editor
 module ExceptionCache =
     let private store = ConditionalWeakTable<exn, ExceptionDispatchInfo>()
 
-    let private capture =
+    let private captureIfMissing =
         ConditionalWeakTable<exn, ExceptionDispatchInfo>.CreateValueCallback(fun error -> ExceptionDispatchInfo.Capture error)
+
+    /// Captures the current trace of `error` and replaces the cached one.
+    let private captureNew error =
+        let edi = ExceptionDispatchInfo.Capture error
+        store.AddOrUpdate(error, edi)
+        edi
 
     /// Rethrows `error` with the dispatch info captured where it was thrown, so a failure propagating through
     /// many frames does not grow its stack trace at every frame. `owner` is the trampoline of the awaiting frame,
@@ -170,16 +181,11 @@ module ExceptionCache =
     let throwCached (owner: Async2Trampoline | null) (error: exn) : 'T =
         let edi =
             match owner with
-            | null ->
-                let edi = ExceptionDispatchInfo.Capture error
-                store.AddOrUpdate(error, edi)
-                edi
-            | owner when obj.ReferenceEquals(owner.Propagating, error) -> store.GetValue(error, capture)
+            | null -> captureNew error
+            | owner when obj.ReferenceEquals(owner.Propagating, error) -> store.GetValue(error, captureIfMissing)
             | owner ->
-                let edi = ExceptionDispatchInfo.Capture error
-                store.AddOrUpdate(error, edi)
                 owner.Propagating <- error
-                edi
+                captureNew error
 
         edi.Throw()
         Unchecked.defaultof<_>
@@ -207,6 +213,12 @@ module ExceptionCache =
                 with error ->
                     throwCached owner error
             | failure -> throwCached owner failure.InnerExceptions[0]
+
+module internal ExecutionContexts =
+    /// Makes `context` the execution context of this thread. When it is already current, nothing is restored.
+    let switchTo (context: ExecutionContext) =
+        if not (obj.ReferenceEquals(context, ExecutionContext.Capture())) then
+            ExecutionContext.Restore context
 
 type Async2Invocation<'R> = Async2Context -> Task<'R>
 
@@ -239,13 +251,19 @@ and [<Sealed; NoEquality; NoComparison; System.ComponentModel.EditorBrowsable(Sy
         // context, so keep the one the callee has to start in.
         context <- ExecutionContext.Capture()
 
+    /// Forgets the rest of the chain after a frame completed it.
+    member private _.Clear() =
+        next <- ValueNone
+        context <- null
+
     /// Runs frames until the chain completes, and returns the task of the last frame, or null when a frame suspends.
     /// After a suspension another thread can continue the chain at once, so nothing here touches the box after it.
     member private this.Run() : Task<'R> | null =
-        let mutable result = null
+        let mutable last = null
         let mutable running = true
 
         while running do
+            // Run the computation that was handed over last, in the execution context it was handed over in.
             let invocation = next.Value
             next <- ValueNone
 
@@ -253,9 +271,7 @@ and [<Sealed; NoEquality; NoComparison; System.ComponentModel.EditorBrowsable(Sy
             | null -> ()
             | handed ->
                 context <- null
-
-                if not (obj.ReferenceEquals(handed, ExecutionContext.Capture())) then
-                    ExecutionContext.Restore handed
+                ExecutionContexts.switchTo handed
 
             let task =
                 try
@@ -264,6 +280,7 @@ and [<Sealed; NoEquality; NoComparison; System.ComponentModel.EditorBrowsable(Sy
                     Task.FromException<'R> error
 
             if not task.IsCompleted then
+                // Continue the chain when the frame completes.
                 running <- false
                 pending <- task
 
@@ -273,13 +290,13 @@ and [<Sealed; NoEquality; NoComparison; System.ComponentModel.EditorBrowsable(Sy
 
                 task.GetAwaiter().UnsafeOnCompleted(onPendingCompleted)
             elif next.IsNone || not task.IsCompletedSuccessfully then
-                // The frame returned a value or failed: the chain is complete.
-                next <- ValueNone
-                context <- null
+                // The frame returned a value or failed: the chain is complete. Otherwise the frame handed over
+                // its callee, and its own result is a placeholder.
+                this.Clear()
+                last <- task
                 running <- false
-                result <- task
 
-        result
+        last
 
     /// Runs `this.Run` and then reverts the execution context of the calling thread, which `Run` switches to the one
     /// each frame was handed over in.
@@ -291,9 +308,7 @@ and [<Sealed; NoEquality; NoComparison; System.ComponentModel.EditorBrowsable(Sy
         finally
             match callerContext with
             | null -> ()
-            | caller ->
-                if not (obj.ReferenceEquals(caller, ExecutionContext.Capture())) then
-                    ExecutionContext.Restore caller
+            | caller -> ExecutionContexts.switchTo caller
 
     member private this.PendingCompleted() =
         let task = nonNull pending
@@ -303,8 +318,7 @@ and [<Sealed; NoEquality; NoComparison; System.ComponentModel.EditorBrowsable(Sy
             if next.IsSome && task.IsCompletedSuccessfully then
                 this.RunInCallerContext()
             else
-                next <- ValueNone
-                context <- null
+                this.Clear()
                 task
 
         match last with
@@ -402,31 +416,20 @@ module Async2BuilderSources =
 
     type Source<'T> = delegate of CancellationToken -> 'T
 
+    /// The awaiter is taken at once, so a hot awaitable keeps running while the sources merged with it start.
     let inline ofAwaitable awaitable =
         let awaiter = Awaitable.getAwaiter awaitable
-
-        Source(fun _ ->
-            if not (Awaiter.isCompleted awaiter) then
-                AsyncHelpers.UnsafeAwaitAwaiter awaiter
-            Awaiter.getResult awaiter
-        )
+        Source(fun _ -> Awaiter.await awaiter)
 
     let inline ofCancellableAwaitable cancellableAwaitable =
-        Source(fun ct ->
-            let awaiter =
-                cancellableAwaitable ct
-                |> Awaitable.getAwaiter
+        Source(fun ct -> cancellableAwaitable ct |> Awaitable.getAwaiter |> Awaiter.await)
 
-            if not (Awaiter.isCompleted awaiter) then
-                AsyncHelpers.UnsafeAwaitAwaiter awaiter
-            Awaiter.getResult awaiter
-        )
-
+    /// Starts `right` as a task that runs until it first suspends, runs `left`, and then waits for `right`.
     let inline merge ([<InlineIfLambda>] left: Source<'A>) ([<InlineIfLambda>] right: Source<'B>) =
         Source(fun ct ->
-            let right = __runtimeAsyncReturn (right.Invoke ct)
-            let left = left.Invoke ct
-            struct (left, right |> AsyncHelpers.Await))
+            let rightTask = __runtimeAsyncReturn (right.Invoke ct)
+            let leftResult = left.Invoke ct
+            struct (leftResult, AsyncHelpers.Await rightTask))
 
 [<Struct; NoEquality; NoComparison; CompiledName("FSharpAsync2`1")>]
 type Async2<'T> (invocation: Async2Invocation<'T>) =
@@ -448,9 +451,6 @@ type Async2<'T> (invocation: Async2Invocation<'T>) =
     member _.StartNested(trampoline) =
         Async2StartTrampoline.start trampoline invocation
 
-    member internal _.StartInIsolatedTrampoline ct =
-        Async2StartTrampoline.startIsolated invocation ct
-
 /// Builder code: `'T` is the type of this piece.
 type Async2Code<'T> = Async2Context -> 'T
 
@@ -467,6 +467,10 @@ module Async2Builder =
     let inline ofAsync2 (computation: Async2<'T>) =
         Source(fun ct -> computation.StartTrampolined ct |> ExceptionCache.await null)
 
+    /// Starts `computation` nested in the start of the frame with context `ctx`, and waits for its result.
+    let inline awaitNested (ctx: Async2Context) (computation: Async2<'T>) =
+        computation.StartNested ctx.Trampoline |> ExceptionCache.await ctx.Trampoline
+
 open Async2Builder
 
 type Async2Builder() =
@@ -476,8 +480,7 @@ type Async2Builder() =
     member inline _.Delay([<InlineIfLambda>] generator: unit -> Async2Code<'T>) : Async2Code<'T> =
         fun ctx ->
             check ctx.CancellationToken
-            let code = generator ()
-            code ctx
+            generator () ctx
 
     member inline _.Zero() : Async2Code<unit> =
         fun ctx ->
@@ -489,10 +492,11 @@ type Async2Builder() =
             check ctx.CancellationToken
             value
 
-    member inline _.Combine([<InlineIfLambda>] first, [<InlineIfLambda>] second) : Async2Code<'T> =
+    member inline _.Combine([<InlineIfLambda>] first: Async2Code<unit>, [<InlineIfLambda>] second: Async2Code<'T>)
+        : Async2Code<'T> =
         fun ctx ->
             check ctx.CancellationToken
-            first (ctx) |> ignore
+            first ctx
             second ctx
 
     member inline _.TryWith ([<InlineIfLambda>] body, [<InlineIfLambda>] handler) : Async2Code<'T> =
@@ -560,7 +564,7 @@ type Async2Builder() =
     member inline _.Source(computation: Async2<'T>) = computation
 
     member inline _.ReturnFrom(computation: Async2<'T>) : Async2Code<'T> =
-        fun ctx -> computation.StartNested ctx.Trampoline |> ExceptionCache.await ctx.Trampoline
+        fun ctx -> awaitNested ctx computation
 
     member inline _.ReturnFromFinal(computation: Async2<'T>) : Async2Code<'T> =
         fun ctx ->
@@ -576,8 +580,7 @@ type Async2Builder() =
     member inline _.Bind(computation: Async2<'T>, [<InlineIfLambda>] continuation) : Async2Code<'U> =
         fun ctx ->
             check ctx.CancellationToken
-            let result = computation.StartNested ctx.Trampoline |> ExceptionCache.await ctx.Trampoline
-            continuation result ctx
+            continuation (awaitNested ctx computation) ctx
 
     member inline _.MergeSources(left: Async2<'A>, [<InlineIfLambda>] right: Source<'B>) =
         merge (ofAsync2 left) right
