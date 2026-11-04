@@ -448,7 +448,7 @@ module Async2BuilderSources =
             Awaiter.getResult awaiter
         )
 
-    let inline merge (left: Source<'A>) (right: Source<'B>) =
+    let inline merge ([<InlineIfLambda>] left: Source<'A>) ([<InlineIfLambda>] right: Source<'B>) =
         Source(fun ct ->
             let right = __runtimeAsyncReturn (right.Invoke ct)
             let left = left.Invoke ct

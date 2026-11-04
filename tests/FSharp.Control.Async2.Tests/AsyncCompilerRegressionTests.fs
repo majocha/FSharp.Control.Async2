@@ -755,3 +755,112 @@ module AsyncCompatibilityTests =
         let ct, viaAsync2 = Async2.RunSynchronously(computation, cancellationToken = cts.Token)
         Assert.Equal(cts.Token, ct)
         Assert.Equal(cts.Token, viaAsync2)
+
+    [<Fact>]
+    let ``and! binds two Async2 computations`` () =
+        let computation = async2 {
+            let! a = async2 { return 1 }
+            and! b = async2 { return "two" }
+            return a, b
+        }
+        Assert.Equal((1, "two"), Async2.RunSynchronously computation)
+
+    [<Fact>]
+    let ``and! binds two Async2 computations that suspend`` () =
+        let computation = async2 {
+            let! a = async2 {
+                do! Task.Yield()
+                return 1
+            }
+            and! b = async2 {
+                do! Task.Yield()
+                return 2
+            }
+            return a + b
+        }
+        Assert.Equal(3, Async2.RunSynchronously computation)
+
+    [<Fact>]
+    let ``and! binds an Async2 computation and a task`` () =
+        let computation = async2 {
+            let! a = async2 { return 1 }
+            and! b = Task.FromResult 2
+            let! c = Task.FromResult 3
+            and! d = async2 { return 4 }
+            return a + b + c + d
+        }
+        Assert.Equal(10, Async2.RunSynchronously computation)
+
+    [<Fact>]
+    let ``and! binds two tasks`` () =
+        let computation = async2 {
+            let! a = Task.Delay(1).ContinueWith(fun _ -> 1)
+            and! b = ValueTask<int> 2
+            return a + b
+        }
+        Assert.Equal(3, Async2.RunSynchronously computation)
+
+    [<Fact>]
+    let ``and! binds three sources`` () =
+        let computation = async2 {
+            let! a = async2 { return 1 }
+            and! b = async2 {
+                do! Task.Yield()
+                return 2
+            }
+            and! c = Task.FromResult 3
+            return a + b + c
+        }
+        Assert.Equal(6, Async2.RunSynchronously computation)
+
+    [<Fact>]
+    let ``and! in a loop binds on each iteration`` () =
+        let computation = async2 {
+            let mutable total = 0
+            for i in 1 .. 10 do
+                let! a = async2 { return i }
+                and! b = async2 { return i }
+                total <- total + a + b
+            return total
+        }
+        Assert.Equal(110, Async2.RunSynchronously computation)
+
+    [<Fact>]
+    let ``and! propagates the failure of either source`` () =
+        let failing = async2 {
+            do! Task.Yield()
+            return invalidOp "and! failure"
+        }
+        let left = async2 {
+            let! a = failing
+            and! b = async2 { return 1 }
+            return a + b
+        }
+        let right = async2 {
+            let! a = async2 { return 1 }
+            and! b = failing
+            return a + b
+        }
+        let leftError = Assert.Throws<InvalidOperationException>(fun () -> Async2.RunSynchronously left |> ignore)
+        let rightError = Assert.Throws<InvalidOperationException>(fun () -> Async2.RunSynchronously right |> ignore)
+        Assert.Equal("and! failure", leftError.Message)
+        Assert.Equal("and! failure", rightError.Message)
+
+    [<Fact>]
+    let ``and! flows the start token into both Async2 computations`` () =
+        use cts = new CancellationTokenSource()
+        let computation = async2 {
+            let! a = async2 {
+                let! ct = CurrentCancellationToken
+                return ct
+            }
+            and! b = async2 {
+                do! Task.Yield()
+                let! ct = CurrentCancellationToken
+                return ct
+            }
+            return a, b
+        }
+        let a, b = Async2.RunSynchronously(computation, cancellationToken = cts.Token)
+        Assert.Equal(cts.Token, a)
+        Assert.Equal(cts.Token, b)
