@@ -668,6 +668,82 @@ module AsyncCompatibilityTests =
         }
         Assert.Equal("root", Async2.RunSynchronously root)
 
+    let rec private yieldingCountDown (n: int) : Async2<int> = async2 {
+        do! Task.Yield()
+        if n = 0 then return 0 else return! yieldingCountDown (n - 1)
+    }
+
+    [<Fact>]
+    let ``Deep tail recursion completes when every frame suspends`` () =
+        Assert.Equal(0, Async2.RunSynchronously(async2 { return! yieldingCountDown 100_000 }))
+
+    [<Fact>]
+    let ``Tail call propagates an exception from a frame that runs after the chain suspended`` () =
+        let failure = InvalidOperationException("boom")
+        let leaf = async2 {
+            do! Task.Yield()
+            if true then raise failure
+            return 0
+        }
+        let middle = async2 {
+            do! Task.Yield()
+            return! leaf
+        }
+        let root = async2 { return! middle }
+        let actual = Assert.Throws<InvalidOperationException>(fun () -> Async2.RunSynchronously root |> ignore)
+        Assert.Same(failure, actual)
+
+    [<Fact>]
+    let ``Tail call propagates cancellation from a frame that runs after the chain suspended`` () =
+        use cts = new CancellationTokenSource()
+        let leaf = async2 {
+            do! Task.Yield()
+            cts.Cancel()
+            do! Async2.Sleep 5000
+            return 1
+        }
+        let middle = async2 {
+            do! Task.Yield()
+            return! leaf
+        }
+        let root = async2 { return! middle }
+        Assert.ThrowsAny<OperationCanceledException>(fun () ->
+            Async2.RunSynchronously(root, cancellationToken = cts.Token) |> ignore)
+        |> ignore
+
+    [<Fact>]
+    let ``Tail call ends with a pending custom Async2 value after the chain suspended`` () =
+        let completion = TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously)
+        let custom = Async2<int>(fun _ -> completion.Task)
+        let middle = async2 {
+            do! Task.Yield()
+            return! custom
+        }
+        let root = async2 { return! middle }
+        let running = Async2.StartAsTask root
+        Assert.False(running.Wait 50)
+        completion.SetResult 9
+        Assert.Equal(9, running.Result)
+
+    [<Fact>]
+    let ``Tail call after the chain suspended does not leak the ExecutionContext of a callee into its caller`` () =
+        let local = AsyncLocal<string>()
+        let leaf = async2 {
+            do! Task.Yield()
+            return 0
+        }
+        let middle = async2 {
+            local.Value <- "middle"
+            do! Task.Yield()
+            return! leaf
+        }
+        let root = async2 {
+            local.Value <- "root"
+            let! _ = async2 { return! middle }
+            return local.Value
+        }
+        Assert.Equal("root", Async2.RunSynchronously root)
+
     [<Fact>]
     let ``CurrentCancellationToken reads the start token`` () =
         use cts = new CancellationTokenSource()
