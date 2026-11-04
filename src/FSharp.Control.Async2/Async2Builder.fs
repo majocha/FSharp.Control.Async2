@@ -77,7 +77,7 @@ and [<Sealed; System.ComponentModel.EditorBrowsable(System.ComponentModel.Editor
     Async2Trampoline internal (cancellationToken: CancellationToken) =
     inherit Async2Context(cancellationToken)
 
-    let mutable queue: Queue<unit -> unit> | null = null
+    let mutable queue: Queue<Action> | null = null
 
     /// The trampoline that holds the failure mark for this one, or null when this one holds it.
     let mutable markHolder: Async2Trampoline | null = null
@@ -114,10 +114,10 @@ and [<Sealed; System.ComponentModel.EditorBrowsable(System.ComponentModel.Editor
         Interlocked.CompareExchange(&owner, Environment.CurrentManagedThreadId, 0) = 0
 
     /// Only the owner enqueues.
-    member internal _.Enqueue(action: unit -> unit) =
+    member internal _.Enqueue(action: Action) =
         match queue with
         | null ->
-            let created = Queue<unit -> unit>()
+            let created = Queue<Action>()
             created.Enqueue action
             queue <- created
         | existing -> existing.Enqueue action
@@ -136,7 +136,7 @@ and [<Sealed; System.ComponentModel.EditorBrowsable(System.ComponentModel.Editor
             | null -> ()
             | queue ->
                 while queue.Count > 0 do
-                    queue.Dequeue()()
+                    queue.Dequeue().Invoke()
         finally
             Volatile.Write(&owner, 0)
 
@@ -344,44 +344,24 @@ module internal Async2StartTrampoline =
         with error ->
             Task.FromException<'T> error
 
-    /// Runs a completion on the owner's queue if this thread owns the trampoline. Otherwise it runs here: as the
-    /// owner when nobody owns it, so completions that follow are queued flat, or directly when another thread
-    /// owns it.
-    let private enqueueCompletion (trampoline: Async2Trampoline) action =
-        if trampoline.IsOwnedHere then
-            trampoline.Enqueue action
-        elif trampoline.TryOwn() then
-            trampoline.RunAsOwner action
-        else
-            action ()
+    /// Suspends the frame that awaits it and queues the continuation of that frame on the trampoline, so the owner
+    /// resumes it when its drain loop runs, on a shallow stack.
+    [<Struct; NoEquality; NoComparison>]
+    type private BounceAwaiter(trampoline: Async2Trampoline) =
+        member _.IsCompleted = false
+        member _.GetResult() = ()
 
-    let private runInContext = ContextCallback(fun state -> (state :?> unit -> unit) ())
+        interface ICriticalNotifyCompletion with
+            member _.OnCompleted continuation = trampoline.Enqueue continuation
+            member _.UnsafeOnCompleted continuation = trampoline.Enqueue continuation
 
-    /// Defers a start that is too deep to run inline. The returned task is completed from a drain loop and runs
-    /// its continuations synchronously there on purpose, so the awaiting parent resumes on a shallow stack.
-    let private enqueueStart (trampoline: Async2Trampoline) (invocation: Async2Invocation<'T>) ctx =
-        let completion = TaskCompletionSource<'T>()
-
-        let run () =
-            try
-                let pending = invoke invocation ctx
-
-                if pending.IsCompleted then
-                    completion.TrySetFromTask pending |> ignore
-                else
-                    // Do not capture a scheduling context for this internal completion bridge.
-                    pending.ConfigureAwait(false).GetAwaiter().UnsafeOnCompleted(fun () ->
-                        enqueueCompletion trampoline (fun () -> completion.TrySetFromTask pending |> ignore))
-            with error ->
-                completion.TrySetException error |> ignore
-
-        // The queue is drained after the parent has returned or suspended, so the child must run
-        // in the execution context the parent had when it asked for the start.
-        match ExecutionContext.Capture() with
-        | null -> trampoline.Enqueue run
-        | context -> trampoline.Enqueue(fun () -> ExecutionContext.Run(context, runInContext, run))
-
-        completion.Task
+    /// Starts a nested computation that is too deep to run inline: this frame suspends at once and resumes from the
+    /// drain loop of the owner, where it runs the computation. The parent awaits the task of this frame.
+    let private bounced (trampoline: Async2Trampoline) (invocation: Async2Invocation<'T>) : Task<'T> =
+        __runtimeAsyncReturn (
+            AsyncHelpers.UnsafeAwaitAwaiter(BounceAwaiter trampoline)
+            invoke invocation trampoline |> ExceptionCache.await trampoline
+        )
 
     /// Starts on a trampoline that this thread created and owns.
     let private startOwned (trampoline: Async2Trampoline) (invocation: Async2Invocation<'T>) =
@@ -401,7 +381,7 @@ module internal Async2StartTrampoline =
             if Async2Trampoline.CanRunInline then
                 invoke invocation ctx
             else
-                enqueueStart trampoline invocation ctx
+                bounced trampoline invocation
         elif trampoline.TryOwn() then
             trampoline.RunAsOwner(fun () -> invoke invocation ctx)
         else

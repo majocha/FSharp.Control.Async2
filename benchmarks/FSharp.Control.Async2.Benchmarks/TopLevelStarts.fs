@@ -43,6 +43,20 @@ type TopLevelStartBenchmarks() =
 
         total
 
+    /// Non-tail recursion that never suspends and is deep enough to run the stack low, so nested starts bounce.
+    [<Benchmark>]
+    member _.DeepSynchronousRecursion() =
+        let rec down n =
+            async2 {
+                if n = 0 then
+                    return 0
+                else
+                    let! rest = down (n - 1)
+                    return rest + 1
+            }
+
+        down 100_000 |> Run.async2
+
     /// Starts from user code that suspend once, so their trampoline is never reused.
     [<Benchmark(OperationsPerInvoke = Count)>]
     member _.StartImmediateAsTaskSuspending() =
