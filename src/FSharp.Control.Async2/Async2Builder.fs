@@ -96,13 +96,10 @@ type Async2Context =
 
 type Async2Invocation<'R> = Async2Context -> Task<'R>
 
-module internal Async2Context =
-    let root (start: Async2Start) = { Start = start; Chain = None }
-
 /// The drain loop of a start runs on the thread that made the start, further down the stack than the frames that run
 /// inline. A nested start that bounces because the stack runs low queues its continuation there, and the loop runs it
 /// when the synchronous part of the start returns.
-module internal Drain =
+module internal Trampoline =
     /// True when the drain loop of `start` runs further down the stack of this thread.
     let ownedBy (start: Async2Start) =
         Volatile.Read(&start.Owner) = Environment.CurrentManagedThreadId
@@ -199,7 +196,7 @@ module ExceptionCache =
     /// Awaits `task` outside builder code.
     let inline awaitOutside (task: Task<'T>) = awaitWith rethrowOutside task
 
-module internal ExecutionContexts =
+module internal ExecutionContext =
     /// Makes `context` the execution context of this thread. When it is already current, nothing is restored.
     let switchTo (context: ExecutionContext) =
         if not (obj.ReferenceEquals(context, ExecutionContext.Capture())) then
@@ -245,7 +242,7 @@ module TailChain =
                     chain.Next <- ValueNone
 
                     match handover.Context with
-                    | ValueSome context -> ExecutionContexts.switchTo context
+                    | ValueSome context -> ExecutionContext.switchTo context
                     | ValueNone -> ()
 
                     task <- invoke ctx (handover.Invocation :?> Async2Invocation<'R>)
@@ -256,12 +253,12 @@ module TailChain =
             ExceptionCache.await start task
         )
 
-module internal Async2Starts =
+module internal Async2Start =
 
     /// A synchronous failure of a custom factory surfaces as a faulted task, like a failure inside builder code.
     let inline private invoke (invocation: Async2Invocation<'T>) (start: Async2Start) =
         try
-            invocation (Async2Context.root start)
+            invocation { Start = start; Chain = None }
         with error ->
             Task.FromException<'T> error
 
@@ -273,8 +270,8 @@ module internal Async2Starts =
         member _.GetResult() = ()
 
         interface ICriticalNotifyCompletion with
-            member _.OnCompleted continuation = Drain.enqueue start continuation
-            member _.UnsafeOnCompleted continuation = Drain.enqueue start continuation
+            member _.OnCompleted continuation = Trampoline.enqueue start continuation
+            member _.UnsafeOnCompleted continuation = Trampoline.enqueue start continuation
 
     /// Starts a nested computation that is too deep to run inline: this frame suspends at once and resumes from the
     /// drain loop, where it runs the computation. The parent awaits the task of this frame.
@@ -300,16 +297,16 @@ module internal Async2Starts =
                 Queue = None
             }
 
-        Drain.run start (fun () -> invoke invocation start)
+        Trampoline.run start (fun () -> invoke invocation start)
 
     /// A start nested in another one, which awaits it. It runs inline when the stack has room. On a low stack it
     /// bounces to the drain loop of its start when that loop runs further down this stack. Otherwise nothing drains
     /// further down, so it continues on a fresh stack. That happens only away from the thread that made the start,
     /// for example after a frame resumed on the thread pool, or after the synchronous part of the start returned.
     let start (start: Async2Start) (invocation: Async2Invocation<'T>) =
-        if Drain.canRunInline () then
+        if Trampoline.canRunInline () then
             invoke invocation start
-        elif Drain.ownedBy start then
+        elif Trampoline.ownedBy start then
             bounced start invocation
         else
             startOnFreshStack start invocation
@@ -350,13 +347,13 @@ type Async2<'T> (invocation: Async2Invocation<'T>) =
     // Keep trampoline internals out of runtime-async inline expansions.
     [<MethodImpl(MethodImplOptions.NoInlining)>]
     member _.StartTrampolined ct =
-        Async2Starts.startIsolated invocation ct
+        Async2Start.startIsolated invocation ct
 
     /// Builder plumbing: starts this computation nested in `start`.
     [<System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)>]
     [<MethodImpl(MethodImplOptions.NoInlining)>]
     member _.StartNested(start) =
-        Async2Starts.start start invocation
+        Async2Start.start start invocation
 
 /// Builder code: `'T` is the type of this piece.
 type Async2Code<'T> = Async2Context -> 'T
