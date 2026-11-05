@@ -104,7 +104,7 @@ module RuntimeAsyncBuilderAwaitableExtensionsHighPriority =
         member inline _.Source(task: ValueTask) = Started(fun () -> task |> AsyncHelpers.Await)
         // Bind also cold-start Async2 computations
         member inline _.Source(computation: Async2<'T>) =
-            Started(fun () -> computation.StartTrampolined CancellationToken.None |> ExceptionCache.await null)
+            Started(fun () -> computation.StartTrampolined CancellationToken.None |> ExceptionCache.awaitOutside)
 
 [<AutoOpen>]
 module RuntimeTask =

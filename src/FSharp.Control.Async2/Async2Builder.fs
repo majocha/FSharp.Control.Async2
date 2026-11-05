@@ -57,80 +57,93 @@ type Async2Start =
         {
             CancellationToken: CancellationToken
 
-            /// The failure that propagates through the frames of this start, with the trace of its throw, or null.
-            /// The frames of one start run one after another, and the completion of a frame's task orders its write
-            /// before the read of the parent that awaits it, also when the parent resumes on another thread.
-            mutable Failure: ExceptionDispatchInfo | null
+            /// The failure that propagates through the frames of this start, with the trace of its throw. The frames
+            /// of one start run one after another, and the completion of a frame's task orders its write before the
+            /// read of the parent that awaits it, also when the parent resumes on another thread.
+            mutable Failure: ExceptionDispatchInfo option
         }
 
-/// The context of a frame: the start it belongs to and, when the frame runs in a tail-call chain, the box of the chain,
-/// which a final `return!` hands its callee to.
+/// A computation that a frame of a tail-call chain hands over, with the execution context it has to start in.
+[<Struct; NoEquality; NoComparison>]
+type internal Handover =
+    {
+        Invocation: obj
+        Context: ExecutionContext voption
+    }
+
+/// The chain of computations that frames hand over with a final `return!`.
+[<NoEquality; NoComparison; System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)>]
+type TailChain = internal { mutable Next: Handover voption }
+
+/// The context of a frame: the start it belongs to and, when the frame runs in a tail-call chain, the chain.
 [<Struct; NoEquality; NoComparison; System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)>]
 type Async2Context =
     {
         Start: Async2Start
-        Chain: obj | null
+        Chain: TailChain option
     }
 
     /// The token of the start. Every start nested in it runs with the same token.
     member ctx.CancellationToken = ctx.Start.CancellationToken
 
+type Async2Invocation<'R> = Async2Context -> Task<'R>
+
 module internal Async2Context =
-    let root (start: Async2Start) = { Start = start; Chain = null }
+    let root (start: Async2Start) = { Start = start; Chain = None }
 
-/// The drain loop that runs on this thread, for one start. A nested start that bounces because the stack runs low
-/// queues its continuation here, and the loop runs it when the synchronous part of the start returns, further down
-/// the stack. Only that thread touches these values.
+/// The drain loop of one start on one thread. A nested start that bounces because the stack runs low queues its
+/// continuation here, and the loop runs it when the synchronous part of the start returns, further down the stack.
+[<Struct; NoEquality; NoComparison>]
+type internal Drain =
+    {
+        Owner: Async2Start
+        Queue: Queue<Action> voption
+    }
+
 [<AbstractClass; Sealed>]
-type internal DrainState =
-    /// The start whose drain loop runs innermost on this thread, or null.
+type internal DrainSlot =
+    /// The drain loop that runs innermost on this thread. Only this thread touches it.
     [<ThreadStatic; DefaultValue>]
-    static val mutable private owner: Async2Start | null
+    static val mutable private current: Drain voption
 
-    [<ThreadStatic; DefaultValue>]
-    static val mutable private queue: Queue<Action> | null
-
-    static member Owner
-        with get () = DrainState.owner
-        and set value = DrainState.owner <- value
-
-    static member Queue
-        with get () = DrainState.queue
-        and set value = DrainState.queue <- value
+    static member Current
+        with get () = DrainSlot.current
+        and set value = DrainSlot.current <- value
 
 module internal Drain =
     /// True when the innermost drain loop on this thread belongs to `start`.
-    let ownedBy (start: Async2Start) = obj.ReferenceEquals(DrainState.Owner, start)
+    let ownedBy (start: Async2Start) =
+        match DrainSlot.Current with
+        | ValueSome drain -> obj.ReferenceEquals(drain.Owner, start)
+        | ValueNone -> false
 
     /// Queues a continuation on the innermost drain loop of this thread.
     let enqueue (continuation: Action) =
-        match DrainState.Queue with
-        | null ->
-            let created = Queue<Action>()
-            created.Enqueue continuation
-            DrainState.Queue <- created
-        | queue -> queue.Enqueue continuation
+        match DrainSlot.Current with
+        | ValueSome { Queue = ValueSome queue } -> queue.Enqueue continuation
+        | ValueSome drain ->
+            let queue = Queue<Action>()
+            queue.Enqueue continuation
+            DrainSlot.Current <- ValueSome { drain with Queue = ValueSome queue }
+        | ValueNone -> invalidOp "No drain loop runs on this thread."
 
     /// Runs `action` with a drain loop for `start` on this thread, then runs every continuation queued meanwhile.
     /// The loop of an enclosing start on this thread continues afterwards. Queued continuations never throw.
     let inline run (start: Async2Start) ([<InlineIfLambda>] action: unit -> 'T) =
-        let enclosingOwner = DrainState.Owner
-        let enclosingQueue = DrainState.Queue
-        DrainState.Owner <- start
-        DrainState.Queue <- null
+        let enclosing = DrainSlot.Current
+        DrainSlot.Current <- ValueSome { Owner = start; Queue = ValueNone }
 
         try
             action ()
         finally
             try
-                match DrainState.Queue with
-                | null -> ()
-                | queue ->
+                match DrainSlot.Current with
+                | ValueSome { Queue = ValueSome queue } ->
                     while queue.Count > 0 do
                         queue.Dequeue().Invoke()
+                | _ -> ()
             finally
-                DrainState.Owner <- enclosingOwner
-                DrainState.Queue <- enclosingQueue
+                DrainSlot.Current <- enclosing
 
     /// A nested start runs inline unless the stack runs low, so a bounce happens only where running inline would
     /// overflow. A bounced child is incomplete when its parent awaits it, so under a SynchronizationContext or a
@@ -146,37 +159,36 @@ module internal Drain =
 /// and the cost of a deep failure would grow with the square of the depth.
 module ExceptionCache =
 
-    /// Rethrows `error`. `owner` is the start of the awaiting frame, or null for an await outside builder code.
-    ///
-    /// When `error` is the failure that propagates through the start, it is rethrown with the trace of its throw. A
-    /// user handler that rethrows the same object propagates the failure. Any other failure is a new throw: from user
-    /// code, from a foreign awaiter, or a throw after a handler handled the failure. Its trace is captured here, and
-    /// it becomes the failure that propagates.
-    let throwCached (owner: Async2Start | null) (error: exn) : 'T =
-        match owner with
-        | null -> ExceptionDispatchInfo.Throw error
-        | owner ->
-            let propagating =
-                match owner.Failure with
-                | null -> false
-                | failure -> obj.ReferenceEquals(failure.SourceException, error)
+    /// Rethrows `error` in a frame of `start`. When `error` is the failure that propagates through the start, it is
+    /// rethrown with the trace of its throw. A user handler that rethrows the same object propagates the failure. Any
+    /// other failure is a new throw: from user code, from a foreign awaiter, or a throw after a handler handled the
+    /// failure. Its trace is captured here, and it becomes the failure that propagates.
+    let rethrow (start: Async2Start) (error: exn) : 'T =
+        let failure =
+            match start.Failure with
+            | Some failure when obj.ReferenceEquals(failure.SourceException, error) -> failure
+            | _ ->
+                let failure = ExceptionDispatchInfo.Capture error
+                start.Failure <- Some failure
+                failure
 
-            if not propagating then
-                owner.Failure <- ExceptionDispatchInfo.Capture error
+        failure.Throw()
+        Unchecked.defaultof<_>
 
-            (nonNull owner.Failure).Throw()
-
+    /// Rethrows `error` outside builder code, where no start tracks the failure.
+    let rethrowOutside (error: exn) : 'T =
+        ExceptionDispatchInfo.Throw error
         Unchecked.defaultof<_>
 
     /// For a failure that a user handler handled. A later throw of the same object is then a new throw.
-    let handled (start: Async2Start) = start.Failure <- null
+    let handled (start: Async2Start) = start.Failure <- None
 
-    /// Awaits `task` and rethrows its failure through the cache. The wait itself never throws: awaiting a
-    /// faulted task directly would throw once in the awaiter, again where the suspended frame resumes, and
-    /// a third time here, so a failure crossing one frame would cost three throws instead of one.
-    /// `UnsafeAwaitAwaiter` only waits for completion and never calls `GetResult`; unlike awaiting a
-    /// `ConfigureAwait(SuppressThrowing)` awaitable, it allocates nothing beyond what `Await` does.
-    let inline await (owner: Async2Start | null) (task: Task<'T>) =
+    /// Awaits `task` and passes its failure to `rethrow`. The wait itself never throws: awaiting a faulted task
+    /// directly would throw once in the awaiter, again where the suspended frame resumes, and a third time here, so a
+    /// failure crossing one frame would cost three throws instead of one. `UnsafeAwaitAwaiter` only waits for
+    /// completion and never calls `GetResult`; unlike awaiting a `ConfigureAwait(SuppressThrowing)` awaitable, it
+    /// allocates nothing beyond what `Await` does.
+    let inline awaitWith ([<InlineIfLambda>] rethrow: exn -> 'T) (task: Task<'T>) =
         if not task.IsCompleted then
             AsyncHelpers.UnsafeAwaitAwaiter(task.GetAwaiter())
 
@@ -189,8 +201,15 @@ module ExceptionCache =
                 try
                     task.GetAwaiter().GetResult()
                 with error ->
-                    throwCached owner error
-            | failure -> throwCached owner failure.InnerExceptions[0]
+                    rethrow error
+            | failure -> rethrow failure.InnerExceptions[0]
+
+    /// Awaits `task` in a frame of `start`.
+    let inline await (start: Async2Start) (task: Task<'T>) =
+        awaitWith (fun error -> rethrow start error) task
+
+    /// Awaits `task` outside builder code.
+    let inline awaitOutside (task: Task<'T>) = awaitWith rethrowOutside task
 
 module internal ExecutionContexts =
     /// Makes `context` the execution context of this thread. When it is already current, nothing is restored.
@@ -198,47 +217,50 @@ module internal ExecutionContexts =
         if not (obj.ReferenceEquals(context, ExecutionContext.Capture())) then
             ExecutionContext.Restore context
 
-type Async2Invocation<'R> = Async2Context -> Task<'R>
-
 /// Runs a tail-call chain: the computation of the final `return!` that started the chain, then each computation that
 /// a frame of the chain hands over with its own final `return!`. A handing frame finishes before its callee starts,
 /// so the chain runs on a stack and in memory that do not grow with its length.
-[<Sealed; NoEquality; NoComparison; System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)>]
-type TailBox<'R>(start: Async2Start) =
-    /// The computation that a frame handed over, with the execution context it has to start in.
-    let mutable next = ValueNone
+module TailChain =
 
-    /// Hands over the computation that runs after the calling frame finishes. Finishing reverts the execution context
-    /// of the frame, so the callee keeps the one it was handed over in.
-    member _.Set(invocation: Async2Invocation<'R>) =
-        next <- ValueSome(struct (invocation, ExecutionContext.Capture()))
+    /// Builder plumbing: hands over the computation that runs after the calling frame finishes. Finishing reverts the
+    /// execution context of the frame, so the callee keeps the one it was handed over in.
+    let handOver (chain: TailChain) (invocation: Async2Invocation<'R>) =
+        chain.Next <-
+            ValueSome
+                {
+                    Invocation = invocation
+                    Context = ValueOption.ofObj (ExecutionContext.Capture())
+                }
 
-    member private this.Invoke(invocation: Async2Invocation<'R>) =
+    let private invoke (ctx: Async2Context) (invocation: Async2Invocation<'R>) =
         try
-            invocation { Start = start; Chain = this }
+            invocation ctx
         with error ->
             Task.FromException<'R> error
 
-    /// Runs the chain from `first` and returns the outcome of its last frame. It waits for each frame that suspends.
-    /// When it returns or suspends, runtime async restores the execution context of the caller.
-    member this.Run(first: Async2Invocation<'R>) : Task<'R> =
+    /// Builder plumbing: runs the chain from `first` and returns the outcome of its last frame. It waits for each
+    /// frame that suspends. When it returns or suspends, runtime async restores the execution context of the caller.
+    /// The frames of the chain hand over computations of the same result type `'R` as `first`.
+    let run (start: Async2Start) (first: Async2Invocation<'R>) : Task<'R> =
         __runtimeAsyncReturn (
-            let mutable task = this.Invoke first
+            let chain = { Next = ValueNone }
+            let ctx = { Start = start; Chain = Some chain }
+            let mutable task = invoke ctx first
             let mutable running = true
 
             while running do
                 if not task.IsCompleted then
                     AsyncHelpers.UnsafeAwaitAwaiter(task.GetAwaiter())
 
-                match next with
-                | ValueSome(struct (invocation, context)) when task.IsCompletedSuccessfully ->
-                    next <- ValueNone
+                match chain.Next with
+                | ValueSome handover when task.IsCompletedSuccessfully ->
+                    chain.Next <- ValueNone
 
-                    match context with
-                    | null -> ()
-                    | handed -> ExecutionContexts.switchTo handed
+                    match handover.Context with
+                    | ValueSome context -> ExecutionContexts.switchTo context
+                    | ValueNone -> ()
 
-                    task <- this.Invoke invocation
+                    task <- invoke ctx (handover.Invocation :?> Async2Invocation<'R>)
                 | _ ->
                     // The frame returned a value or failed: the chain is complete.
                     running <- false
@@ -282,7 +304,7 @@ module internal Async2Starts =
     /// Starts with a new start state and a drain loop for it on this thread, so the caller observes all synchronous
     /// progress.
     let startIsolated (invocation: Async2Invocation<'T>) cancellationToken =
-        let start = { CancellationToken = cancellationToken; Failure = null }
+        let start = { CancellationToken = cancellationToken; Failure = None }
         Drain.run start (fun () -> invoke invocation start)
 
     /// A start nested in another one, which awaits it. It runs inline when the stack has room. On a low stack it
@@ -355,7 +377,7 @@ module Async2Builder =
         cancellationToken.ThrowIfCancellationRequested()
 
     let inline ofAsync2 (computation: Async2<'T>) =
-        Source(fun ct -> computation.StartTrampolined ct |> ExceptionCache.await null)
+        Source(fun ct -> computation.StartTrampolined ct |> ExceptionCache.awaitOutside)
 
     /// Starts `computation` nested in the start of the frame with context `ctx`, and waits for its result.
     ///
@@ -463,13 +485,13 @@ type Async2Builder() =
     member inline _.ReturnFromFinal(computation: Async2<'T>) : Async2Code<'T> =
         fun ctx ->
             match ctx.Chain with
-            | :? TailBox<'T> as tail ->
+            | Some chain ->
                 // This frame runs in a tail-call chain: hand the callee over and let the frame finish.
-                tail.Set computation.Invocation
+                TailChain.handOver chain computation.Invocation
                 Unchecked.defaultof<_>
-            | _ ->
+            | None ->
                 // Start a chain that runs the callee, then each computation it hands over in turn.
-                TailBox(ctx.Start).Run computation.Invocation |> ExceptionCache.await ctx.Start
+                TailChain.run ctx.Start computation.Invocation |> ExceptionCache.await ctx.Start
 
     member inline _.Bind(computation: Async2<'T>, [<InlineIfLambda>] continuation) : Async2Code<'U> =
         fun ctx ->
