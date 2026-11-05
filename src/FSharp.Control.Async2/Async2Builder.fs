@@ -61,6 +61,14 @@ type Async2Start =
             /// of one start run one after another, and the completion of a frame's task orders its write before the
             /// read of the parent that awaits it, also when the parent resumes on another thread.
             mutable Failure: ExceptionDispatchInfo option
+
+            /// The managed thread id of the thread whose drain loop runs for this start, or 0. Other threads read it,
+            /// so it is one word.
+            mutable Owner: int
+
+            /// The continuations that nested starts bounced to the drain loop, created at the first bounce. Only the
+            /// owner thread touches it.
+            mutable Queue: Queue<Action> option
         }
 
 /// A computation that a frame of a tail-call chain hands over, with the execution context it has to start in.
@@ -91,59 +99,39 @@ type Async2Invocation<'R> = Async2Context -> Task<'R>
 module internal Async2Context =
     let root (start: Async2Start) = { Start = start; Chain = None }
 
-/// The drain loop of one start on one thread. A nested start that bounces because the stack runs low queues its
-/// continuation here, and the loop runs it when the synchronous part of the start returns, further down the stack.
-[<Struct; NoEquality; NoComparison>]
-type internal Drain =
-    {
-        Owner: Async2Start
-        Queue: Queue<Action> voption
-    }
-
-[<AbstractClass; Sealed>]
-type internal DrainSlot =
-    /// The drain loop that runs innermost on this thread. Only this thread touches it.
-    [<ThreadStatic; DefaultValue>]
-    static val mutable private current: Drain voption
-
-    static member Current
-        with get () = DrainSlot.current
-        and set value = DrainSlot.current <- value
-
+/// The drain loop of a start runs on the thread that made the start, further down the stack than the frames that run
+/// inline. A nested start that bounces because the stack runs low queues its continuation there, and the loop runs it
+/// when the synchronous part of the start returns.
 module internal Drain =
-    /// True when the innermost drain loop on this thread belongs to `start`.
+    /// True when the drain loop of `start` runs further down the stack of this thread.
     let ownedBy (start: Async2Start) =
-        match DrainSlot.Current with
-        | ValueSome drain -> obj.ReferenceEquals(drain.Owner, start)
-        | ValueNone -> false
+        Volatile.Read(&start.Owner) = Environment.CurrentManagedThreadId
 
-    /// Queues a continuation on the innermost drain loop of this thread.
-    let enqueue (continuation: Action) =
-        match DrainSlot.Current with
-        | ValueSome { Queue = ValueSome queue } -> queue.Enqueue continuation
-        | ValueSome drain ->
+    /// Queues a continuation on the drain loop of `start`. Only the owner thread calls it.
+    let enqueue (start: Async2Start) (continuation: Action) =
+        match start.Queue with
+        | Some queue -> queue.Enqueue continuation
+        | None ->
             let queue = Queue<Action>()
             queue.Enqueue continuation
-            DrainSlot.Current <- ValueSome { drain with Queue = ValueSome queue }
-        | ValueNone -> invalidOp "No drain loop runs on this thread."
+            start.Queue <- Some queue
 
-    /// Runs `action` with a drain loop for `start` on this thread, then runs every continuation queued meanwhile.
-    /// The loop of an enclosing start on this thread continues afterwards. Queued continuations never throw.
+    /// Runs `action` with the drain loop of the new `start` on this thread, then runs every continuation queued
+    /// meanwhile. Queued continuations never throw.
     let inline run (start: Async2Start) ([<InlineIfLambda>] action: unit -> 'T) =
-        let enclosing = DrainSlot.Current
-        DrainSlot.Current <- ValueSome { Owner = start; Queue = ValueNone }
+        start.Owner <- Environment.CurrentManagedThreadId
 
         try
             action ()
         finally
             try
-                match DrainSlot.Current with
-                | ValueSome { Queue = ValueSome queue } ->
+                match start.Queue with
+                | Some queue ->
                     while queue.Count > 0 do
                         queue.Dequeue().Invoke()
-                | _ -> ()
+                | None -> ()
             finally
-                DrainSlot.Current <- enclosing
+                Volatile.Write(&start.Owner, 0)
 
     /// A nested start runs inline unless the stack runs low, so a bounce happens only where running inline would
     /// overflow. A bounced child is incomplete when its parent awaits it, so under a SynchronizationContext or a
@@ -277,22 +265,22 @@ module internal Async2Starts =
         with error ->
             Task.FromException<'T> error
 
-    /// Suspends the frame that awaits it and queues the continuation of that frame on the drain loop of this thread,
-    /// so the loop resumes it on a shallow stack.
+    /// Suspends the frame that awaits it and queues the continuation of that frame on the drain loop of `start`, so
+    /// the loop resumes it on a shallow stack.
     [<Struct; NoEquality; NoComparison>]
-    type private BounceAwaiter =
+    type private BounceAwaiter(start: Async2Start) =
         member _.IsCompleted = false
         member _.GetResult() = ()
 
         interface ICriticalNotifyCompletion with
-            member _.OnCompleted continuation = Drain.enqueue continuation
-            member _.UnsafeOnCompleted continuation = Drain.enqueue continuation
+            member _.OnCompleted continuation = Drain.enqueue start continuation
+            member _.UnsafeOnCompleted continuation = Drain.enqueue start continuation
 
     /// Starts a nested computation that is too deep to run inline: this frame suspends at once and resumes from the
     /// drain loop, where it runs the computation. The parent awaits the task of this frame.
     let private bounced (start: Async2Start) (invocation: Async2Invocation<'T>) : Task<'T> =
         __runtimeAsyncReturn (
-            AsyncHelpers.UnsafeAwaitAwaiter(BounceAwaiter())
+            AsyncHelpers.UnsafeAwaitAwaiter(BounceAwaiter start)
             invoke invocation start |> ExceptionCache.await start
         )
 
@@ -304,13 +292,20 @@ module internal Async2Starts =
     /// Starts with a new start state and a drain loop for it on this thread, so the caller observes all synchronous
     /// progress.
     let startIsolated (invocation: Async2Invocation<'T>) cancellationToken =
-        let start = { CancellationToken = cancellationToken; Failure = None }
+        let start =
+            {
+                CancellationToken = cancellationToken
+                Failure = None
+                Owner = 0
+                Queue = None
+            }
+
         Drain.run start (fun () -> invoke invocation start)
 
     /// A start nested in another one, which awaits it. It runs inline when the stack has room. On a low stack it
     /// bounces to the drain loop of its start when that loop runs further down this stack. Otherwise nothing drains
     /// further down, so it continues on a fresh stack. That happens only away from the thread that made the start,
-    /// for example after a frame resumed on the thread pool.
+    /// for example after a frame resumed on the thread pool, or after the synchronous part of the start returned.
     let start (start: Async2Start) (invocation: Async2Invocation<'T>) =
         if Drain.canRunInline () then
             invoke invocation start
