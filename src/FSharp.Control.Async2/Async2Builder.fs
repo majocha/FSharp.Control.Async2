@@ -2,6 +2,7 @@ namespace Microsoft.FSharp.Control
 
 open System
 open System.Runtime.CompilerServices
+open System.ComponentModel
 open System.Threading
 open System.Threading.Tasks
 open System.Collections.Generic
@@ -51,7 +52,7 @@ open AwaitableHelpers
 
 /// The state of one start from user code, shared by every start nested in it. Its frames can run on any thread, so
 /// they carry it in their context.
-[<NoEquality; NoComparison; System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)>]
+[<NoEquality; NoComparison; EditorBrowsable(EditorBrowsableState.Never)>]
 type Async2Start =
     internal
         {
@@ -71,30 +72,28 @@ type Async2Start =
             mutable Queue: Queue<Action> option
         }
 
+type Async2Invocation<'R> = Async2Context<'R> -> Task<'R>
+
 /// A computation that a frame of a tail-call chain hands over, with the execution context it has to start in.
-[<Struct; NoEquality; NoComparison>]
-type internal Handover =
+and [<Struct; NoEquality; NoComparison>] internal Handover<'R> =
     {
-        Invocation: obj
+        Invocation: Async2Invocation<'R>
         Context: ExecutionContext voption
     }
 
 /// The chain of computations that frames hand over with a final `return!`.
-[<NoEquality; NoComparison; System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)>]
-type TailChain = internal { mutable Next: Handover voption }
+
+and [<NoEquality; NoComparison; EditorBrowsable(EditorBrowsableState.Never)>] TailChain<'R> = internal { mutable Next: Handover<'R> voption }
 
 /// The context of a frame: the start it belongs to and, when the frame runs in a tail-call chain, the chain.
-[<Struct; NoEquality; NoComparison; System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)>]
-type Async2Context =
+and [<Struct; NoEquality; NoComparison; EditorBrowsable(EditorBrowsableState.Never)>] Async2Context<'R> =
     {
         Start: Async2Start
-        Chain: TailChain option
+        Chain: TailChain<'R> option
     }
 
     /// The token of the start. Every start nested in it runs with the same token.
     member ctx.CancellationToken = ctx.Start.CancellationToken
-
-type Async2Invocation<'R> = Async2Context -> Task<'R>
 
 /// The drain loop of a start runs on the thread that made the start, further down the stack than the frames that run
 /// inline. A nested start that bounces because the stack runs low queues its continuation there, and the loop runs it
@@ -209,19 +208,13 @@ module TailChain =
 
     /// Builder plumbing: hands over the computation that runs after the calling frame finishes. Finishing reverts the
     /// execution context of the frame, so the callee keeps the one it was handed over in.
-    let handOver (chain: TailChain) (invocation: Async2Invocation<'R>) =
+    let handOver (chain: TailChain<'R>) (invocation: Async2Invocation<'R>) =
         chain.Next <-
             ValueSome
                 {
                     Invocation = invocation
                     Context = ValueOption.ofObj (ExecutionContext.Capture())
                 }
-
-    let private invoke (ctx: Async2Context) (invocation: Async2Invocation<'R>) =
-        try
-            invocation ctx
-        with error ->
-            Task.FromException<'R> error
 
     /// Builder plumbing: runs the chain from `first` and returns the outcome of its last frame. It waits for each
     /// frame that suspends. When it returns or suspends, runtime async restores the execution context of the caller.
@@ -230,7 +223,7 @@ module TailChain =
         __runtimeAsyncReturn (
             let chain = { Next = ValueNone }
             let ctx = { Start = start; Chain = Some chain }
-            let mutable task = invoke ctx first
+            let mutable task = first ctx
             let mutable running = true
 
             while running do
@@ -245,7 +238,7 @@ module TailChain =
                     | ValueSome context -> ExecutionContext.switchTo context
                     | ValueNone -> ()
 
-                    task <- invoke ctx (handover.Invocation :?> Async2Invocation<'R>)
+                    task <- handover.Invocation ctx
                 | _ ->
                     // The frame returned a value or failed: the chain is complete.
                     running <- false
@@ -356,7 +349,7 @@ type Async2<'T> (invocation: Async2Invocation<'T>) =
         Async2Start.start start invocation
 
 /// Builder code: `'T` is the type of this piece.
-type Async2Code<'T> = Async2Context -> 'T
+type Async2Code<'R, 'T> = Async2Context<'R> -> 'T
 
 open Async2BuilderSources
 
@@ -376,7 +369,7 @@ module Async2Builder =
     /// The start goes through `StartNested`, which returns a task, so the call and the await are not fused into an
     /// async call of the runtime. Fusing them was measured: a fused chain of frames that suspends or bounces
     /// allocates more than a task for each frame.
-    let inline awaitNested (ctx: Async2Context) (computation: Async2<'T>) =
+    let inline awaitNested (ctx: Async2Context<'R>) (computation: Async2<'T>) =
         computation.StartNested ctx.Start |> ExceptionCache.await ctx.Start
 
 open Async2Builder
@@ -385,29 +378,29 @@ type Async2Builder() =
 
     // The code type of the builder is `Async2Context -> 'T`: the context of the frame is passed along as state to
     // every delayed continuation.
-    member inline _.Delay([<InlineIfLambda>] generator: unit -> Async2Code<'T>) : Async2Code<'T> =
+    member inline _.Delay([<InlineIfLambda>] generator: unit -> Async2Code<'R, 'T>) : Async2Code<'R, 'T> =
         fun ctx ->
             check ctx.CancellationToken
             generator () ctx
 
-    member inline _.Zero() : Async2Code<unit> =
+    member inline _.Zero() : Async2Code<'R, unit> =
         fun ctx ->
             check ctx.CancellationToken
             ()
 
-    member inline _.Return(value: 'T) : Async2Code<'T> =
+    member inline _.Return(value: 'T) : Async2Code<'R, 'T> =
         fun ctx ->
             check ctx.CancellationToken
             value
 
-    member inline _.Combine([<InlineIfLambda>] first: Async2Code<unit>, [<InlineIfLambda>] second: Async2Code<'T>)
-        : Async2Code<'T> =
+    member inline _.Combine([<InlineIfLambda>] first: Async2Code<'R, unit>, [<InlineIfLambda>] second: Async2Code<'R, 'T>)
+        : Async2Code<'R, 'T> =
         fun ctx ->
             check ctx.CancellationToken
             first ctx
             second ctx
 
-    member inline _.TryWith ([<InlineIfLambda>] body, [<InlineIfLambda>] handler) : Async2Code<'T> =
+    member inline _.TryWith ([<InlineIfLambda>] body, [<InlineIfLambda>] handler) : Async2Code<'R, 'T> =
         fun ctx ->
             check ctx.CancellationToken
             try
@@ -422,7 +415,7 @@ type Async2Builder() =
                 ExceptionCache.handled ctx.Start
                 result
 
-    member inline _.TryFinally ([<InlineIfLambda>] body, [<InlineIfLambda>] compensation) : Async2Code<'T> =
+    member inline _.TryFinally ([<InlineIfLambda>] body, [<InlineIfLambda>] compensation) : Async2Code<'R, 'T> =
         fun ctx ->
             try
                 check ctx.CancellationToken
@@ -430,7 +423,7 @@ type Async2Builder() =
             finally
                 compensation ()
 
-    member inline _.Using(resource: 'T :> IDisposable | null, [<InlineIfLambda>] body) : Async2Code<'U> =
+    member inline _.Using(resource: 'T :> IDisposable | null, [<InlineIfLambda>] body) : Async2Code<'R, 'U> =
         fun ctx ->
             try
                 check ctx.CancellationToken
@@ -438,43 +431,43 @@ type Async2Builder() =
             finally
                 if not (isNull (box resource)) then resource.Dispose()
 
-    member inline _.While(guard: unit -> bool, [<InlineIfLambda>] body) : Async2Code<unit> =
+    member inline _.While(guard: unit -> bool, [<InlineIfLambda>] body) : Async2Code<'R, unit> =
         fun ctx ->
             while guard () do
                 check ctx.CancellationToken
                 body ctx
             check ctx.CancellationToken
 
-    member inline _.For(sequence: seq<'T>, [<InlineIfLambda>] body) : Async2Code<unit> =
+    member inline _.For(sequence: seq<'T>, [<InlineIfLambda>] body) : Async2Code<'R, unit> =
         fun ctx ->
             for item in sequence do
                 check ctx.CancellationToken
                 body item ctx
             check ctx.CancellationToken
 
-    member inline _.Bind([<InlineIfLambda>] source: Source<'T>, [<InlineIfLambda>] continuation) : Async2Code<'U> =
+    member inline _.Bind([<InlineIfLambda>] source: Source<'T>, [<InlineIfLambda>] continuation) : Async2Code<'R, 'U> =
         fun ctx ->
             check ctx.CancellationToken
             continuation (source.Invoke ctx.CancellationToken) ctx
 
-    member inline _.ReturnFrom([<InlineIfLambda>] source: Source<'T>) : Async2Code<'T> =
+    member inline _.ReturnFrom([<InlineIfLambda>] source: Source<'T>) : Async2Code<'R, 'T> =
         fun ctx -> source.Invoke ctx.CancellationToken
 
-    member inline _.ReturnFromFinal([<InlineIfLambda>] source: Source<'T>) : Async2Code<'T> =
+    member inline _.ReturnFromFinal([<InlineIfLambda>] source: Source<'T>) : Async2Code<'R, 'T> =
         fun ctx -> source.Invoke ctx.CancellationToken
 
     member inline _.MergeSources([<InlineIfLambda>] left: Source<'A>, [<InlineIfLambda>] right: Source<'B>) =
         merge left right
 
-    member inline _.Run([<InlineIfLambda>] code: Async2Code<'T>) : Async2<'T> =
+    member inline _.Run([<InlineIfLambda>] code: Async2Code<'R, 'R>) : Async2<'R> =
         Async2(fun ctx -> __runtimeAsyncReturn(code ctx))
 
     member inline _.Source(computation: Async2<'T>) = computation
 
-    member inline _.ReturnFrom(computation: Async2<'T>) : Async2Code<'T> =
+    member inline _.ReturnFrom(computation: Async2<'R>) : Async2Code<'R, 'R> =
         fun ctx -> awaitNested ctx computation
 
-    member inline _.ReturnFromFinal(computation: Async2<'T>) : Async2Code<'T> =
+    member inline _.ReturnFromFinal(computation: Async2<'R>) : Async2Code<'R, 'R> =
         fun ctx ->
             match ctx.Chain with
             | Some chain ->
@@ -485,7 +478,7 @@ type Async2Builder() =
                 // Start a chain that runs the callee, then each computation it hands over in turn.
                 TailChain.run ctx.Start computation.Invocation |> ExceptionCache.await ctx.Start
 
-    member inline _.Bind(computation: Async2<'T>, [<InlineIfLambda>] continuation) : Async2Code<'U> =
+    member inline _.Bind(computation: Async2<'T>, [<InlineIfLambda>] continuation) : Async2Code<'R, 'U> =
         fun ctx ->
             check ctx.CancellationToken
             continuation (awaitNested ctx computation) ctx
@@ -502,7 +495,7 @@ type Async2Builder() =
 [<AutoOpen>]
 module Async2BuilderAsyncDisposableExtensions =
     type Async2Builder with
-        member inline _.Using(resource: 'T :> IAsyncDisposable | null, [<InlineIfLambda>] body) : Async2Code<'U> =
+        member inline _.Using(resource: 'T :> IAsyncDisposable | null, [<InlineIfLambda>] body) : Async2Code<'R, 'U> =
             fun ctx ->
                 try
                     check ctx.CancellationToken
@@ -511,7 +504,7 @@ module Async2BuilderAsyncDisposableExtensions =
                     if not (isNull (box resource)) then
                         resource.DisposeAsync() |> AsyncHelpers.Await
 
-        member inline this.For(sequence: IAsyncEnumerable<'T>, [<InlineIfLambda>] body) : Async2Code<unit> =
+        member inline this.For(sequence: IAsyncEnumerable<'T>, [<InlineIfLambda>] body) : Async2Code<'R, unit> =
             fun ctx ->
                 this.Using
                     (sequence.GetAsyncEnumerator ctx.CancellationToken,
