@@ -248,13 +248,6 @@ module TailChain =
 
 module internal Async2Start =
 
-    /// A synchronous failure of a custom factory surfaces as a faulted task, like a failure inside builder code.
-    let inline private invoke (invocation: Async2Invocation<'T>) (start: Async2Start) =
-        try
-            invocation { Start = start; Chain = None }
-        with error ->
-            Task.FromException<'T> error
-
     /// Suspends the frame that awaits it and queues the continuation of that frame on the drain loop of `start`, so
     /// the loop resumes it on a shallow stack.
     [<Struct; NoEquality; NoComparison>]
@@ -271,13 +264,13 @@ module internal Async2Start =
     let private bounced (start: Async2Start) (invocation: Async2Invocation<'T>) : Task<'T> =
         __runtimeAsyncReturn (
             AsyncHelpers.UnsafeAwaitAwaiter(BounceAwaiter start)
-            invoke invocation start |> ExceptionCache.await start
+            invocation { Start = start; Chain = None } |> ExceptionCache.await start
         )
 
     /// Starts on a thread pool thread, which has an empty stack. `Task.Run` flows the execution context into the
     /// start, and the parent resumes when the start completes.
     let private startOnFreshStack (start: Async2Start) (invocation: Async2Invocation<'T>) =
-        Task.Run<'T>(fun () -> invoke invocation start)
+        Task.Run<'T>(fun () -> invocation { Start = start; Chain = None })
 
     /// Starts with a new start state and a drain loop for it on this thread, so the caller observes all synchronous
     /// progress.
@@ -290,7 +283,7 @@ module internal Async2Start =
                 Queue = None
             }
 
-        Trampoline.run start (fun () -> invoke invocation start)
+        Trampoline.run start (fun () -> invocation { Start = start; Chain = None })
 
     /// A start nested in another one, which awaits it. It runs inline when the stack has room. On a low stack it
     /// bounces to the drain loop of its start when that loop runs further down this stack. Otherwise nothing drains
@@ -298,7 +291,7 @@ module internal Async2Start =
     /// for example after a frame resumed on the thread pool, or after the synchronous part of the start returned.
     let start (start: Async2Start) (invocation: Async2Invocation<'T>) =
         if Trampoline.canRunInline () then
-            invoke invocation start
+            invocation { Start = start; Chain = None }
         elif Trampoline.ownedBy start then
             bounced start invocation
         else

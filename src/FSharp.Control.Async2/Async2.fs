@@ -401,27 +401,6 @@ type Async2 =
             do! Task.Run(Action(fun () -> ()), ct)
         }
 
-    static member SwitchToContext(syncContext: SynchronizationContext | null) : Async2<unit> =
-        Async2(fun ctx ->
-            let completion = TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
-
-            ctx.CancellationToken.ThrowIfCancellationRequested()
-
-            if isNull syncContext then
-                Task.Run(Action(fun () -> completion.SetResult()), ctx.CancellationToken)
-                |> ignore
-            else
-                syncContext.Post(
-                    SendOrPostCallback(fun _ ->
-                        try
-                            completion.SetResult()
-                        with _ ->
-                            ()),
-                    null
-                )
-
-            completion.Task)
-
     static member FromContinuations
         (callback: ('T -> unit) * (exn -> unit) * (OperationCanceledException -> unit) -> unit)
         : Async2<'T> =

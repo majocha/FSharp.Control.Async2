@@ -277,32 +277,6 @@ module AsyncCompilerRegressionTests =
         Assert.Equal(iterations, finalized)
 
     [<Fact>]
-    let ``A failed start does not leave queued children pending`` () =
-        let mutable firstChildTask: Task<int> = null
-        let mutable secondChildTask: Task<int> = null
-        let mutable parentTask: Task<int> = null
-        let thread =
-            Thread(ThreadStart(fun () ->
-                let parent =
-                    Async2<int>(fun ctx ->
-                        firstChildTask <- (async2 { return 42 }).StartTrampolined ctx.CancellationToken
-                        secondChildTask <- (async2 { return 43 }).StartTrampolined ctx.CancellationToken
-                        raise (InvalidOperationException("parent start failed")))
-
-                parentTask <- parent.StartTrampolined CancellationToken.None))
-
-        thread.Start()
-        Assert.True(thread.Join(5000), "Parent start did not finish")
-        Assert.True(parentTask.IsFaulted, "A synchronous start failure should fault the returned task")
-        Assert.IsType<InvalidOperationException>(parentTask.Exception.InnerException) |> ignore
-        Assert.NotNull(firstChildTask)
-        Assert.NotNull(secondChildTask)
-        Assert.True(firstChildTask.IsCompleted, "The first queued child was left pending after the parent failed")
-        Assert.True(secondChildTask.IsCompleted, "The second queued child was left pending after the parent failed")
-        Assert.Equal(42, firstChildTask.GetAwaiter().GetResult())
-        Assert.Equal(43, secondChildTask.GetAwaiter().GetResult())
-
-    [<Fact>]
     let ``Immediate entry points drain nested work in a running trampoline`` () =
         let nested = async2 {
             do! Async2.FromContinuations(fun (success, _, _) -> success())
