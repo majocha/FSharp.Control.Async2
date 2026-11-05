@@ -200,14 +200,19 @@ module Program =
                     .WithCultureInfo(CultureInfo.InvariantCulture)
             )
 
+    /// Takes the BenchmarkDotNet command line, for example `--filter *TailCall*` or `--list flat`.
+    /// Without arguments it runs every benchmark, instead of asking which ones to run.
     [<EntryPoint>]
     let main args =
+        let args = if Array.isEmpty args then [| "--filter"; "*" |] else args
 
-        let summary =
-            BenchmarkRunner.Run<Async2Benchmarks>(config)
+        let summaries =
+            BenchmarkSwitcher.FromTypes([| typeof<Async2Benchmarks> |]).Run(args, config)
 
-        if summary.HasCriticalValidationErrors ||
-           (summary.Reports |> Seq.exists (fun report -> not report.Success)) then
-            1
-        else
-            0
+        let failed =
+            summaries
+            |> Seq.exists (fun summary ->
+                summary.HasCriticalValidationErrors
+                || (summary.Reports |> Seq.exists (fun report -> not report.Success)))
+
+        if failed then 1 else 0
