@@ -43,6 +43,28 @@ type TopLevelStartBenchmarks() =
 
         total
 
+    /// Many short tail-call chains whose last frame suspends: each `return!` starts a chain that waits.
+    [<Benchmark(OperationsPerInvoke = Count)>]
+    member _.ShortChainSuspending() =
+        let leaf (i: int) =
+            async2 {
+                do! Task.Yield()
+                return i
+            }
+
+        let head (i: int) = async2 { return! leaf i }
+
+        async2 {
+            let mutable total = 0
+
+            for i in 0 .. Count - 1 do
+                let! x = head i
+                total <- total + x
+
+            return total
+        }
+        |> Run.async2
+
     /// Non-tail recursion that never suspends and is deep enough to run the stack low, so nested starts bounce.
     [<Benchmark>]
     member _.DeepSynchronousRecursion() =

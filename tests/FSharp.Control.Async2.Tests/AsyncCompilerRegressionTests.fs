@@ -864,3 +864,21 @@ module AsyncCompatibilityTests =
         let a, b = Async2.RunSynchronously(computation, cancellationToken = cts.Token)
         Assert.Equal(cts.Token, a)
         Assert.Equal(cts.Token, b)
+
+    [<Fact>]
+    let ``Tail call chains completed on another thread while the caller starts to wait`` () =
+        // The last frame of each chain completes on the thread pool, so the completion races with the caller
+        // that registers its continuation on the chain.
+        let leaf (i: int) = async2 {
+            do! Task.Run(fun () -> Thread.SpinWait 20)
+            return i
+        }
+        let head (i: int) = async2 { return! leaf i }
+        let computation = async2 {
+            let mutable total = 0L
+            for i in 1 .. 20_000 do
+                let! x = head i
+                total <- total + int64 x
+            return total
+        }
+        Assert.Equal(200_010_000L, Async2.RunSynchronously computation)
