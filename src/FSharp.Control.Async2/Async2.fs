@@ -13,6 +13,27 @@ open System.Threading.Tasks
 
 open Microsoft.FSharp.Core
 open Microsoft.FSharp.Core.CompilerServices
+open System.Runtime.CompilerServices
+
+type SwitchToContextAwaitable(syncContext: SynchronizationContext | null) =
+    let onCompleted (continuation: Action) =
+        if isNull syncContext then
+            ThreadPool.QueueUserWorkItem(fun _ -> continuation.Invoke()) 
+            |> ignore
+        else
+        syncContext.Post((fun _ -> continuation.Invoke()), null)
+
+    member _.IsCompleted = false
+
+    member this.GetAwaiter() = this
+
+    member _.GetResult () = ()
+
+    interface ICriticalNotifyCompletion with
+
+        member _.OnCompleted(continuation) = onCompleted continuation
+
+        member _.UnsafeOnCompleted (continuation: Action) = onCompleted continuation          
 
 module internal Async2RuntimeHelpers =
     type TaskCompletionSourceWithCancellation<'T>(cancellationToken: CancellationToken) =
@@ -173,6 +194,7 @@ module internal Async2RuntimeHelpers =
             }
 
 open Async2RuntimeHelpers
+open System.Runtime.CompilerServices
 
 [<Sealed; CompiledName("FSharpAsync2")>]
 type Async2 =
@@ -397,30 +419,13 @@ type Async2 =
 
     static member SwitchToThreadPool() : Async2<unit> =
         async2 {
-            let! ct = CurrentCancellationToken
-            do! Task.Run(Action(fun () -> ()), ct)
+            do! SwitchToContextAwaitable null
         }
 
     static member SwitchToContext(syncContext: SynchronizationContext | null) : Async2<unit> =
-        Async2(fun ctx ->
-            let completion = TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
-
-            ctx.CancellationToken.ThrowIfCancellationRequested()
-
-            if isNull syncContext then
-                Task.Run(Action(fun () -> completion.SetResult()), ctx.CancellationToken)
-                |> ignore
-            else
-                syncContext.Post(
-                    SendOrPostCallback(fun _ ->
-                        try
-                            completion.SetResult()
-                        with _ ->
-                            ()),
-                    null
-                )
-
-            completion.Task)
+        async2 {
+            do! SwitchToContextAwaitable syncContext
+        }
 
     static member FromContinuations
         (callback: ('T -> unit) * (exn -> unit) * (OperationCanceledException -> unit) -> unit)
