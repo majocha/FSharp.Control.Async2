@@ -44,7 +44,7 @@ module internal Async2RuntimeHelpers =
 
     /// Starts `computation` on this thread, with a trampoline of its own.
     let startImmediate cancellationToken (computation: Async2<'T>) =
-        Async2StartTrampoline.startIsolated computation.Invocation cancellationToken
+        Async2Starts.startIsolated computation.Invocation cancellationToken
 
     let startOnThreadPool cancellationToken (computation: Async2<'T>) =
         Task.Run<'T>(fun () -> startImmediate cancellationToken computation)
