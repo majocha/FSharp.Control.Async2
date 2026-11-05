@@ -79,39 +79,17 @@ and [<Sealed; System.ComponentModel.EditorBrowsable(System.ComponentModel.Editor
 
     let mutable queue: Queue<Action> | null = null
 
-    /// The trampoline that holds the failure mark for this one, or null when this one holds it.
-    let mutable markHolder: Async2Trampoline | null = null
-
     /// The managed thread id of the owner, or 0.
     let mutable owner = Environment.CurrentManagedThreadId
 
     override this.Trampoline = this
 
-    /// The failure that `ExceptionCache.throwCached` rethrew last in a frame of this start, or null. Only the
-    /// mark holder uses its field.
-    [<DefaultValue>]
-    val mutable private propagating: exn | null
-
-    member private this.MarkHolder =
-        match markHolder with
-        | null -> this
-        | holder -> holder
-
-    /// The failure that `ExceptionCache.throwCached` rethrew last in a frame of this start, or null. The frames
-    /// of one start run one after another, and the completion of a frame's task orders its write before the read
-    /// of the parent that awaits it, also when the parent resumes on another thread.
-    member internal this.Propagating
-        with get () = this.MarkHolder.propagating
-        and set (value: exn | null) = this.MarkHolder.propagating <- value
-
-    /// For a nested start that cannot share the trampoline of its parent: it shares the failure mark, so the
-    /// parent sees that a failure of this start propagates.
-    member internal this.ShareMarkOf(parent: Async2Trampoline) = markHolder <- parent.MarkHolder
+    /// The failure that `ExceptionCache.throwCached` rethrew last in a frame of this start, or null. The frames of
+    /// one start run one after another, and the completion of a frame's task orders its write before the read of the
+    /// parent that awaits it, also when the parent resumes on another thread.
+    member val internal Propagating: exn | null = null with get, set
 
     member internal _.IsOwnedHere = Volatile.Read(&owner) = Environment.CurrentManagedThreadId
-
-    member internal _.TryOwn() =
-        Interlocked.CompareExchange(&owner, Environment.CurrentManagedThreadId, 0) = 0
 
     /// Only the owner enqueues.
     member internal _.Enqueue(action: Action) =
@@ -122,8 +100,7 @@ and [<Sealed; System.ComponentModel.EditorBrowsable(System.ComponentModel.Editor
             queue <- created
         | existing -> existing.Enqueue action
 
-    /// Runs `action` as the owner, after a successful `TryOwn` or on a new trampoline, then drains everything
-    /// queued meanwhile.
+    /// Runs `action` as the owner of a new trampoline, then drains everything queued meanwhile.
     member inline internal this.RunAsOwner([<InlineIfLambda>] action: unit -> 'T) =
         try
             action ()
@@ -423,23 +400,22 @@ module internal Async2StartTrampoline =
     let startIsolated (invocation: Async2Invocation<'T>) ct =
         startOwned (Async2Trampoline ct) invocation
 
-    /// A start nested in another one, which awaits it: it shares the parent's trampoline. When another thread owns
-    /// that one, the parent runs concurrently with the owner, and the start gets a trampoline of its own. That
-    /// trampoline shares the failure mark of the parent, so a failure that propagates keeps its cached trace.
-    let start (trampoline: Async2Trampoline) (invocation: Async2Invocation<'T>) =
-        let ctx = trampoline :> Async2Context
+    /// Starts on a thread pool thread, which has an empty stack. `Task.Run` flows the execution context into the
+    /// start, and the parent resumes when the start completes.
+    let private startOnFreshStack (invocation: Async2Invocation<'T>) (trampoline: Async2Trampoline) =
+        Task.Run<'T>(fun () -> invoke invocation trampoline)
 
-        if trampoline.IsOwnedHere then
-            if Async2Trampoline.CanRunInline then
-                invoke invocation ctx
-            else
-                bounced trampoline invocation
-        elif trampoline.TryOwn() then
-            trampoline.RunAsOwner(fun () -> invoke invocation ctx)
+    /// A start nested in another one, which awaits it. It runs inline when the stack has room. On a low stack it
+    /// bounces to the drain loop of the owner, which runs further down this stack. When this thread does not own the
+    /// trampoline, nothing drains further down, so it continues on a fresh stack. That happens only away from the
+    /// thread that made the start, for example after a frame resumed on the thread pool.
+    let start (trampoline: Async2Trampoline) (invocation: Async2Invocation<'T>) =
+        if Async2Trampoline.CanRunInline then
+            invoke invocation trampoline
+        elif trampoline.IsOwnedHere then
+            bounced trampoline invocation
         else
-            let own = Async2Trampoline trampoline.CancellationToken
-            own.ShareMarkOf trampoline
-            startOwned own invocation
+            startOnFreshStack invocation trampoline
 
 /// Bound with `let!` in `async2` or `asyncSeq2` to read the token the computation was started with,
 /// without starting another computation the way `Async2.CancellationToken` does.
@@ -502,6 +478,10 @@ module Async2Builder =
         Source(fun ct -> computation.StartTrampolined ct |> ExceptionCache.await null)
 
     /// Starts `computation` nested in the start of the frame with context `ctx`, and waits for its result.
+    ///
+    /// The start goes through `StartNested`, which returns a task, so the call and the await are not fused into an
+    /// async call of the runtime. Fusing them was measured: a fused chain of frames that suspends or bounces
+    /// allocates more than a task for each frame.
     let inline awaitNested (ctx: Async2Context) (computation: Async2<'T>) =
         computation.StartNested ctx.Trampoline |> ExceptionCache.await ctx
 
