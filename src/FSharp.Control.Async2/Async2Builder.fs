@@ -57,10 +57,10 @@ type Async2Start =
         {
             CancellationToken: CancellationToken
 
-            /// The failure that `ExceptionCache.throwCached` rethrew last in a frame of this start, or null. The
-            /// frames of one start run one after another, and the completion of a frame's task orders its write
+            /// The failure that propagates through the frames of this start, with the trace of its throw, or null.
+            /// The frames of one start run one after another, and the completion of a frame's task orders its write
             /// before the read of the parent that awaits it, also when the parent resumes on another thread.
-            mutable Propagating: exn | null
+            mutable Failure: ExceptionDispatchInfo | null
         }
 
 /// The context of a frame: the start it belongs to and, when the frame runs in a tail-call chain, the box of the chain,
@@ -141,41 +141,35 @@ module internal Drain =
         || not (isNull SynchronizationContext.Current)
         || not (obj.ReferenceEquals(TaskScheduler.Current, TaskScheduler.Default))
 
+/// Keeps the stack trace of a failure short while it propagates through many frames. Each frame that awaits a failed
+/// task rethrows the failure. If it captured the trace each time, the trace would grow by one section at each frame,
+/// and the cost of a deep failure would grow with the square of the depth.
 module ExceptionCache =
-    let private store = ConditionalWeakTable<exn, ExceptionDispatchInfo>()
 
-    let private captureIfMissing =
-        ConditionalWeakTable<exn, ExceptionDispatchInfo>.CreateValueCallback(fun error -> ExceptionDispatchInfo.Capture error)
-
-    /// Captures the current trace of `error` and replaces the cached one.
-    let private captureNew error =
-        let edi = ExceptionDispatchInfo.Capture error
-        store.AddOrUpdate(error, edi)
-        edi
-
-    /// Rethrows `error` with the dispatch info captured where it was thrown, so a failure propagating through
-    /// many frames does not grow its stack trace at every frame. `owner` is the start of the awaiting frame, or null
-    /// for an await outside builder code.
+    /// Rethrows `error`. `owner` is the start of the awaiting frame, or null for an await outside builder code.
     ///
-    /// The start holds the failure that this function rethrew last in one of its frames, so the awaiting parent tells
-    /// propagation from a new throw of the same exception object on any thread. A user handler that rethrows the
-    /// same object propagates the failure. Any other failure is a new throw: from user code, from a foreign awaiter,
-    /// or a throw after a handler handled the failure. It replaces the entry, so a new throw of the same exception
-    /// object does not get an old trace.
+    /// When `error` is the failure that propagates through the start, it is rethrown with the trace of its throw. A
+    /// user handler that rethrows the same object propagates the failure. Any other failure is a new throw: from user
+    /// code, from a foreign awaiter, or a throw after a handler handled the failure. Its trace is captured here, and
+    /// it becomes the failure that propagates.
     let throwCached (owner: Async2Start | null) (error: exn) : 'T =
-        let edi =
-            match owner with
-            | null -> captureNew error
-            | owner when obj.ReferenceEquals(owner.Propagating, error) -> store.GetValue(error, captureIfMissing)
-            | owner ->
-                owner.Propagating <- error
-                captureNew error
+        match owner with
+        | null -> ExceptionDispatchInfo.Throw error
+        | owner ->
+            let propagating =
+                match owner.Failure with
+                | null -> false
+                | failure -> obj.ReferenceEquals(failure.SourceException, error)
 
-        edi.Throw()
+            if not propagating then
+                owner.Failure <- ExceptionDispatchInfo.Capture error
+
+            (nonNull owner.Failure).Throw()
+
         Unchecked.defaultof<_>
 
     /// For a failure that a user handler handled. A later throw of the same object is then a new throw.
-    let handled (start: Async2Start) = start.Propagating <- null
+    let handled (start: Async2Start) = start.Failure <- null
 
     /// Awaits `task` and rethrows its failure through the cache. The wait itself never throws: awaiting a
     /// faulted task directly would throw once in the awaiter, again where the suspended frame resumes, and
@@ -288,7 +282,7 @@ module internal Async2Starts =
     /// Starts with a new start state and a drain loop for it on this thread, so the caller observes all synchronous
     /// progress.
     let startIsolated (invocation: Async2Invocation<'T>) cancellationToken =
-        let start = { CancellationToken = cancellationToken; Propagating = null }
+        let start = { CancellationToken = cancellationToken; Failure = null }
         Drain.run start (fun () -> invoke invocation start)
 
     /// A start nested in another one, which awaits it. It runs inline when the stack has room. On a low stack it
