@@ -167,21 +167,6 @@ module ExceptionCache =
     /// For a failure that a user handler handled. A later throw of the same object is then a new throw.
     let handled (trampoline: Async2Trampoline) = trampoline.Propagating <- null
 
-    /// The result of `task`, which has completed, or its failure rethrown through the cache. It does not wait, so a
-    /// frame that calls it has no await point here.
-    let inline resultOf (owner: Async2Context | null) (task: Task<'T>) =
-        if task.IsCompletedSuccessfully then
-            task.Result
-        else
-            match task.Exception with
-            | null ->
-                // Cancelled: only the awaiter can produce the OperationCanceledException the task holds.
-                try
-                    task.GetAwaiter().GetResult()
-                with error ->
-                    throwCached owner error
-            | failure -> throwCached owner failure.InnerExceptions[0]
-
     /// Awaits `task` and rethrows its failure through the cache. The wait itself never throws: awaiting a
     /// faulted task directly would throw once in the awaiter, again where the suspended frame resumes, and
     /// a third time here, so a failure crossing one frame would cost three throws instead of one.
@@ -194,7 +179,17 @@ module ExceptionCache =
         if not task.IsCompleted then
             AsyncHelpers.UnsafeAwaitAwaiter(task.GetAwaiter())
 
-        resultOf owner task
+        if task.IsCompletedSuccessfully then
+            task.Result
+        else
+            match task.Exception with
+            | null ->
+                // Cancelled: only the awaiter can produce the OperationCanceledException the task holds.
+                try
+                    task.GetAwaiter().GetResult()
+                with error ->
+                    throwCached owner error
+            | failure -> throwCached owner failure.InnerExceptions[0]
 
 module internal ExecutionContexts =
     /// Makes `context` the execution context of this thread. When it is already current, nothing is restored.
@@ -205,164 +200,53 @@ module internal ExecutionContexts =
 type Async2Invocation<'R> = Async2Context -> Task<'R>
 
 /// Runs a tail-call chain: the computation of the final `return!` that started the chain, then each computation that
-/// a frame of the chain hands over with its own final `return!`. A handing frame finishes, so the chain runs on a
-/// stack and in memory that do not grow with its length.
-///
-/// The driver runs the frames one after another. When a frame suspends, the driver does not wait for it: the
-/// completion of the frame's task continues the chain on the thread that completes it. Only the outcome of the last
-/// frame matters. So a suspension costs a continuation on the frame's task instead of a suspension and a resumption
-/// of a waiting frame.
-///
-/// The frame that starts the chain awaits the box itself, which resumes it when the last frame completes. So a chain
-/// that suspends allocates no task of its own.
+/// a frame of the chain hands over with its own final `return!`. A handing frame finishes before its callee starts,
+/// so the chain runs on a stack and in memory that do not grow with its length.
 and [<Sealed; NoEquality; NoComparison; System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)>] TailBox<'R>(trampoline: Async2Trampoline) =
     inherit Async2Context(trampoline.CancellationToken)
 
-    let mutable next: Async2Invocation<'R> voption = ValueNone
-    let mutable context: ExecutionContext | null = null
-
-    /// The task of the frame that suspended, while the chain waits for it.
-    let mutable pending: Task<'R> | null = null
-
-    let mutable onPendingCompleted: Action | null = null
-
-    /// The task of the last frame, once the chain completed.
-    let mutable last: Task<'R> | null = null
-
-    /// The continuation of the frame that awaits a chain that suspended.
-    let mutable waiter: Action | null = null
-
-    /// `Waiting` and `Done` decide who resumes the awaiting frame: the completion of the chain, or the registration
-    /// of the waiter when the chain completed first.
-    [<Literal>]
-    let Running = 0
-
-    [<Literal>]
-    let Waiting = 1
-
-    [<Literal>]
-    let Done = 2
-
-    let mutable state = Running
+    /// The computation that a frame handed over, with the execution context it has to start in.
+    let mutable next = ValueNone
 
     override _.Trampoline = trampoline
 
-    /// Hands over the computation that runs after the calling frame finishes.
+    /// Hands over the computation that runs after the calling frame finishes. Finishing reverts the execution context
+    /// of the frame, so the callee keeps the one it was handed over in.
     member _.Set(invocation: Async2Invocation<'R>) =
-        next <- ValueSome invocation
-        // The handing frame finishes before the driver starts the callee, and finishing reverts the execution
-        // context, so keep the one the callee has to start in.
-        context <- ExecutionContext.Capture()
+        next <- ValueSome(struct (invocation, ExecutionContext.Capture()))
 
-    /// Forgets the rest of the chain after a frame completed it.
-    member private _.Clear() =
-        next <- ValueNone
-        context <- null
-
-    /// Runs frames until the chain completes, and returns the task of the last frame, or null when a frame suspends.
-    /// After a suspension another thread can continue the chain at once, so nothing here touches the box after it.
-    member private this.Run() : Task<'R> | null =
-        let mutable last = null
-        let mutable running = true
-
-        while running do
-            // Run the computation that was handed over last, in the execution context it was handed over in.
-            let invocation = next.Value
-            next <- ValueNone
-
-            match context with
-            | null -> ()
-            | handed ->
-                context <- null
-                ExecutionContexts.switchTo handed
-
-            let task =
-                try
-                    invocation this
-                with error ->
-                    Task.FromException<'R> error
-
-            if not task.IsCompleted then
-                // Continue the chain when the frame completes.
-                running <- false
-                pending <- task
-
-                if isNull onPendingCompleted then
-                    onPendingCompleted <- Action(this.PendingCompleted)
-
-                task.GetAwaiter().UnsafeOnCompleted(onPendingCompleted)
-            elif next.IsNone || not task.IsCompletedSuccessfully then
-                // The frame returned a value or failed: the chain is complete. Otherwise the frame handed over
-                // its callee, and its own result is a placeholder.
-                this.Clear()
-                last <- task
-                running <- false
-
-        last
-
-    /// Runs `this.Run` and then reverts the execution context of the calling thread, which `Run` switches to the one
-    /// each frame was handed over in.
-    member private this.RunInCallerContext() =
-        let callerContext = ExecutionContext.Capture()
-
+    member private this.Invoke(invocation: Async2Invocation<'R>) =
         try
-            this.Run()
-        finally
-            match callerContext with
-            | null -> ()
-            | caller -> ExecutionContexts.switchTo caller
+            invocation this
+        with error ->
+            Task.FromException<'R> error
 
-    member private this.PendingCompleted() =
-        let task = nonNull pending
-        pending <- null
+    /// Runs the chain from `first` and returns the outcome of its last frame. It waits for each frame that suspends.
+    /// When it returns or suspends, runtime async restores the execution context of the caller.
+    member this.Run(first: Async2Invocation<'R>) : Task<'R> =
+        __runtimeAsyncReturn (
+            let mutable task = this.Invoke first
+            let mutable running = true
 
-        let last =
-            if next.IsSome && task.IsCompletedSuccessfully then
-                this.RunInCallerContext()
-            else
-                this.Clear()
-                task
+            while running do
+                if not task.IsCompleted then
+                    AsyncHelpers.UnsafeAwaitAwaiter(task.GetAwaiter())
 
-        match last with
-        | null -> ()
-        | completed -> this.Complete completed
+                match next with
+                | ValueSome(struct (invocation, context)) when task.IsCompletedSuccessfully ->
+                    next <- ValueNone
 
-    /// Records the task of the last frame, and resumes the awaiting frame if it already waits.
-    member private _.Complete(completed: Task<'R>) =
-        last <- completed
+                    match context with
+                    | null -> ()
+                    | handed -> ExecutionContexts.switchTo handed
 
-        if Interlocked.Exchange(&state, Done) = Waiting then
-            (nonNull waiter).Invoke()
+                    task <- this.Invoke invocation
+                | _ ->
+                    // The frame returned a value or failed: the chain is complete.
+                    running <- false
 
-    /// Starts the chain with `first`. When the chain suspends, the caller awaits the box. Then it reads `Last`.
-    member this.Start(first: Async2Invocation<'R>) =
-        next <- ValueSome first
-
-        match this.RunInCallerContext() with
-        | null -> ()
-        | completed ->
-            // Nobody waits yet, so no other thread reads the state.
-            last <- completed
-            state <- Done
-
-    /// The task of the last frame, after the box completed the await.
-    member _.Last = nonNull last
-
-    member _.IsCompleted = Volatile.Read(&state) = Done
-
-    member _.GetResult() = ()
-
-    interface ICriticalNotifyCompletion with
-        member this.OnCompleted continuation = (this :> ICriticalNotifyCompletion).UnsafeOnCompleted continuation
-
-        member _.UnsafeOnCompleted continuation =
-            waiter <- continuation
-
-            if Interlocked.CompareExchange(&state, Waiting, Running) = Done then
-                // The chain completed after the caller checked `IsCompleted`. Do not resume the caller inside its own
-                // suspension: like a task that is already complete, run the continuation from the thread pool.
-                ThreadPool.UnsafeQueueUserWorkItem((fun (action: Action) -> action.Invoke()), continuation, false)
-                |> ignore
+            ExceptionCache.await trampoline task
+        )
 
 module internal Async2StartTrampoline =
 
@@ -589,14 +473,7 @@ type Async2Builder() =
                 Unchecked.defaultof<_>
             | _ ->
                 // Start a chain that runs the callee, then each computation it hands over in turn.
-                // The frame waits only on the box, so it has one await point here.
-                let tail = TailBox(ctx.Trampoline)
-                tail.Start computation.Invocation
-
-                if not tail.IsCompleted then
-                    AsyncHelpers.UnsafeAwaitAwaiter tail
-
-                tail.Last |> ExceptionCache.resultOf ctx
+                TailBox(ctx.Trampoline).Run computation.Invocation |> ExceptionCache.await ctx
 
     member inline _.Bind(computation: Async2<'T>, [<InlineIfLambda>] continuation) : Async2Code<'U> =
         fun ctx ->
