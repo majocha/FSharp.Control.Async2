@@ -99,8 +99,9 @@ and [<Struct; NoEquality; NoComparison; EditorBrowsable(EditorBrowsableState.Nev
 /// The trampoline of a start covers only its synchronous part: from the start until it completes or first suspends,
 /// on the thread that made the start. It sits at the bottom of that stack, below the frames that run inline. A nested
 /// start that bounces because the stack runs low queues its continuation there, and the trampoline runs it when the
-/// synchronous part returns. So a computation that never suspends completes on the calling thread, before the start
-/// returns, like FSharp.Core async.
+/// synchronous part returns. The parents of a bounced start resume from the trampoline as well (see `resumeAfter`).
+/// So a computation that never suspends completes on the calling thread, before the start returns, like FSharp.Core
+/// async, also under a SynchronizationContext.
 ///
 /// After the start suspends, its frames resume wherever the awaited operation completes them, and the computation has
 /// no thread to stay on. A bounce then goes to the thread pool instead (see `Async2Start.start`).
@@ -136,13 +137,62 @@ module internal Trampoline =
                 Volatile.Write(&start.TrampolineThread, 0)
 
     /// A nested start runs inline unless the stack runs low, so a bounce happens only where running inline would
-    /// overflow. A bounced child is incomplete when its parent awaits it, so under a SynchronizationContext or a
-    /// non-default TaskScheduler the parent's resumption would be posted there, and a blocked context never runs it.
-    /// There nested starts always run inline.
-    let canRunInline () =
-        RuntimeHelpers.TryEnsureSufficientExecutionStack()
-        || not (isNull SynchronizationContext.Current)
-        || not (obj.ReferenceEquals(TaskScheduler.Current, TaskScheduler.Default))
+    /// overflow.
+    let hasStackRoom () = RuntimeHelpers.TryEnsureSufficientExecutionStack()
+
+    /// A bounced child is incomplete when its parent awaits it, so the parent's await captures the current
+    /// SynchronizationContext or TaskScheduler and resumes through it.
+    ///
+    /// A child bounced to the trampoline completes on the same thread, under the same SynchronizationContext, and an
+    /// await resumes inline when the context it captured is current where the awaited task completes. So the
+    /// trampoline can bounce under a SynchronizationContext. A non-default TaskScheduler decides itself whether the
+    /// resumption may run inline, and one that refuses queues it, which a blocked scheduler never runs. There nested
+    /// starts run inline.
+    let canBounceToTrampoline () =
+        obj.ReferenceEquals(TaskScheduler.Current, TaskScheduler.Default)
+
+    /// A child bounced to the thread pool completes on another thread, so under either a SynchronizationContext or
+    /// a non-default TaskScheduler the parent's resumption is posted there, which a blocked context never runs.
+    let canBounceToThreadPool () =
+        isNull SynchronizationContext.Current
+        && obj.ReferenceEquals(TaskScheduler.Current, TaskScheduler.Default)
+
+    /// Resumes a parent frame when its child `task` completes. A child completes inside the resumption of its own
+    /// frames, so when a deep chain of suspended frames unwinds, each parent would resume inside its child's
+    /// completion, and the unwinding would take as much stack as the descent.
+    ///
+    /// During the synchronous part of `start`, a child of the start is pending only because it bounced, and it
+    /// completes from the trampoline. Its parent then resumes from the trampoline too, so the unwinding runs one frame
+    /// per queued continuation on a shallow stack and stays on this thread. Checking the stack first would not do:
+    /// task continuations run the same check before this one, and on a low stack they post the resumption to the
+    /// SynchronizationContext or the thread pool themselves.
+    ///
+    /// Otherwise the task's own awaiter resumes the parent, which captures the SynchronizationContext or TaskScheduler
+    /// as any await does.
+    let resumeAfter (start: Async2Start) (task: Task) (resume: Action) =
+        task
+            .GetAwaiter()
+            .UnsafeOnCompleted(fun () ->
+                if isRunningHere start then
+                    enqueue start resume
+                else
+                    resume.Invoke())
+
+/// Builder plumbing: the awaiter a frame of `start` waits on for an incomplete child `task` during the synchronous
+/// part of the start. See `Trampoline.resumeAfter`.
+[<Struct; NoEquality; NoComparison; EditorBrowsable(EditorBrowsableState.Never)>]
+type ChildAwaiter(start: Async2Start, task: Task) =
+    /// True during the synchronous part of `start` on this thread. Only then can the trampoline resume the parent.
+    /// Otherwise it never runs again for this start, and the task's own awaiter resumes the parent the same way and
+    /// costs less.
+    static member IsNeeded(start: Async2Start) = Trampoline.isRunningHere start
+
+    member _.IsCompleted = task.IsCompleted
+    member _.GetResult() = ()
+
+    interface ICriticalNotifyCompletion with
+        member _.OnCompleted resume = Trampoline.resumeAfter start task resume
+        member _.UnsafeOnCompleted resume = Trampoline.resumeAfter start task resume
 
 /// Keeps the stack trace of a failure short while it propagates through many frames. Each frame that awaits a failed
 /// task rethrows the failure. If it captured the trace each time, the trace would grow by one section at each frame,
@@ -194,8 +244,14 @@ module ExceptionCache =
                     rethrow error
             | failure -> rethrow failure.InnerExceptions[0]
 
-    /// Awaits `task` in a frame of `start`.
+    /// Awaits `task`, a child of a frame of `start`, in that frame.
     let inline await (start: Async2Start) (task: Task<'T>) =
+        if not task.IsCompleted then
+            if ChildAwaiter.IsNeeded start then
+                AsyncHelpers.UnsafeAwaitAwaiter(ChildAwaiter(start, task))
+            else
+                AsyncHelpers.UnsafeAwaitAwaiter(task.GetAwaiter())
+
         awaitWith (fun error -> rethrow start error) task
 
     /// Awaits `task` outside builder code.
@@ -234,7 +290,10 @@ module TailChain =
 
             while running do
                 if not task.IsCompleted then
-                    AsyncHelpers.UnsafeAwaitAwaiter(task.GetAwaiter())
+                    if ChildAwaiter.IsNeeded start then
+                        AsyncHelpers.UnsafeAwaitAwaiter(ChildAwaiter(start, task))
+                    else
+                        AsyncHelpers.UnsafeAwaitAwaiter(task.GetAwaiter())
 
                 match chain.Next with
                 | ValueSome handover when task.IsCompletedSuccessfully ->
@@ -255,7 +314,8 @@ module TailChain =
 module internal Async2Start =
 
     /// Suspends the frame that awaits it and queues the continuation of that frame on the trampoline of `start`, so
-    /// the trampoline resumes it on a shallow stack.
+    /// the trampoline resumes it on a shallow stack. Runtime async does not capture a SynchronizationContext for an
+    /// awaiter of its own kind, so the trampoline resumes the frame inline under one too.
     [<Struct; NoEquality; NoComparison>]
     type private BounceAwaiter(start: Async2Start) =
         member _.IsCompleted = false
@@ -296,14 +356,20 @@ module internal Async2Start =
     /// A start nested in another one, which awaits it. It runs inline when the stack has room. On a low stack it
     /// bounces: to the trampoline during the synchronous part of its start, which keeps it on the calling thread, and
     /// to the thread pool after the start suspended, when the computation already left the calling thread or no
-    /// longer runs above the trampoline.
+    /// longer runs above the trampoline. Where a bounce could leave its parent's resumption to a blocked context
+    /// (see `Trampoline.canBounceToTrampoline` and `canBounceToThreadPool`), it runs inline even on a low stack.
     let start (start: Async2Start) (invocation: Async2Invocation<'T>) =
-        if Trampoline.canRunInline () then
+        if Trampoline.hasStackRoom () then
             invocation { Start = start; Chain = None }
         elif Trampoline.isRunningHere start then
-            bounceToTrampoline start invocation
-        else
+            if Trampoline.canBounceToTrampoline () then
+                bounceToTrampoline start invocation
+            else
+                invocation { Start = start; Chain = None }
+        elif Trampoline.canBounceToThreadPool () then
             bounceToThreadPool start invocation
+        else
+            invocation { Start = start; Chain = None }
 
 /// Bound with `let!` in `async2` or `asyncSeq2` to read the token the computation was started with,
 /// without starting another computation the way `Async2.CancellationToken` does.

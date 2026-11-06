@@ -331,11 +331,42 @@ module SyncOverAsyncTests =
     let ``D - Mutual recursion with task, blocking on the task side`` (stack: string, waitName: string, depth: int) =
         checkWaitCase mutualTask stack waitName depth
 
-    /// The BlockedContext cases run only on the large stack: under a SynchronizationContext nested starts never bounce, so they overflow the small one, as without the trampoline.
-    [<Theory; MemberData(nameof largeStackCases)>]
+    /// Under a SynchronizationContext, nested starts bounce to the trampoline during the synchronous part of the
+    /// start, and their parents resume from there without posting to the context.
+    [<Theory; MemberData(nameof allStackCases)>]
     let ``E - let! recursion under a blocked SynchronizationContext`` (stack: string, depth: int) =
         Assert.Equal(depth, blockUnderContext (stackSize stack) (fun () -> startTask (bound depth)))
 
+    [<Theory>]
+    [<InlineData(100_000)>]
+    let ``E - let! recursion under a blocked SynchronizationContext, deeper than the stack`` (depth: int) =
+        Assert.Equal(depth, blockUnderContext smallStack (fun () -> startTask (bound depth)))
+
+    /// The recursion bounces to the trampoline and stays under the context, on the way down and back up.
+    [<Fact>]
+    let ``E - let! recursion under a SynchronizationContext stays on its thread`` () =
+        let depth = 100_000
+        let mutable otherThread = 0
+
+        let check () =
+            if not (SynchronizationContext.Current :? BlockedContext) then
+                otherThread <- otherThread + 1
+
+        let rec down n : Async2<int> = async2 {
+            check ()
+            if n = 0 then
+                return 0
+            else
+                let! x = down (n - 1)
+                check ()
+                return x + 1
+        }
+
+        let (result: int) = blockUnderContext smallStack (fun () -> startTask (down depth))
+        Assert.Equal(depth, result)
+        Assert.Equal(0, otherThread)
+
+    /// Blocking starts from user code nest on the stack, so the mixed case keeps to the large stack.
     [<Theory; MemberData(nameof largeStackCases)>]
     let ``E - Block and let! under a blocked SynchronizationContext`` (stack: string, depth: int) =
         let wait = wait "GetAwaiter().GetResult()"

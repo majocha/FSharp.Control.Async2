@@ -19,6 +19,19 @@ Experimental: it needs a preview F# compiler with runtime-async support (see
 - A tail-position `return!` hands over to its callee and the caller's frame
   finishes, so the caller does not appear in stack traces. The callee still
   starts in the caller's `ExecutionContext` and sees its `AsyncLocal` values.
+- Deep non-tail recursion (`let!` of nested `async2`) runs inline while the
+  stack has room. When the stack runs low before the computation first
+  suspends, it continues from a trampoline at the bottom of the calling
+  thread's stack, as in `async`, so a computation that never suspends
+  completes on the calling thread. After it has suspended, it continues on a
+  fresh thread-pool thread instead. Under a `SynchronizationContext` the
+  trampoline works the same way, but after a suspension nested starts run
+  inline, since the thread pool would leave the context; very deep non-tail
+  recursion there can overflow the stack. Under a non-default `TaskScheduler`
+  nested starts always run inline.
+- A failure that propagates through many frames keeps the stack trace of its
+  throw instead of growing at each frame.
+- `Async2.SwitchToContext` is not implemented.
 - Extra operations: `Async2.RunSynchronouslyImmediate`, `Async2.Await` and
   `Async2.StartTaskImmediate` for tasks and awaitables, and the module
   functions `Async2.map`, `bind`, `catch`, `catchWith`, `parallelLimit` and
@@ -78,11 +91,15 @@ test files, each adjusted for the differences above.
 
 ## Benchmarks
 
-`benchmarks/FSharp.Control.Async2.Benchmarks` has two kinds of benchmark.
+`benchmarks/FSharp.Control.Async2.Benchmarks` has three kinds of benchmark.
 
 `RecursiveComputationBenchmarks` measures `async2` alone on eight workloads
 (recursion, cancellation, exceptions, `try/with` and `try/finally` at every
 level) at depths 16, 256 and 2048, awaiting `Task.Yield()` every 16 levels.
+
+`TopLevelStartBenchmarks` measures many short starts that have no parent
+computation: `let!` of an `Async2` in `asyncSeq2`, `StartImmediateAsTask`,
+short tail-call chains that suspend, and deep synchronous recursion.
 
 The scenario benchmarks write one application workload three times, with
 `async` (the baseline), `async2` and `task`, each as it is usually written in
@@ -107,3 +124,7 @@ dotnet run -c Release --project benchmarks/FSharp.Control.Async2.Benchmarks/FSha
 
 Pass BenchmarkDotNet options after `--`, such as `-- --filter *DeepException*`.
 `-- --filter "*" --job Dry` runs every case once as a quick smoke test.
+
+`benchmarks/OldBenchmarks` keeps the earlier `async2`-only micro-benchmarks
+(tail-call and mutual recursion loops, among others). It takes the same
+BenchmarkDotNet command line.
