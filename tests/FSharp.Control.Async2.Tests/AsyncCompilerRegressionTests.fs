@@ -651,6 +651,46 @@ module AsyncCompatibilityTests =
     let ``Deep tail recursion completes when every frame suspends`` () =
         Assert.Equal(0, Async2.RunSynchronously(async2 { return! yieldingCountDown 100_000 }))
 
+    /// Runs a chain of `depth` synchronous nested starts, after `before`, and returns the result and the number of
+    /// distinct runs of frames on one thread.
+    let private deepSynchronousRecursion (before: Async2<unit>) depth =
+        let mutable runs = 0
+        let mutable lastThread = 0
+
+        let rec down n : Async2<int> = async2 {
+            let thread = Environment.CurrentManagedThreadId
+            if thread <> lastThread then
+                runs <- runs + 1
+                lastThread <- thread
+            if n = 0 then
+                return 0
+            else
+                let! rest = down (n - 1)
+                return rest + 1
+        }
+
+        let result = Async2.RunSynchronouslyImmediate(async2 {
+            do! before
+            return! down depth
+        })
+
+        result, runs
+
+    /// During the synchronous part of a start, deep nested starts bounce to the trampoline of the start, which keeps
+    /// them on the calling thread.
+    [<Fact>]
+    let ``Deep synchronous recursion stays on the calling thread before the start suspends`` () =
+        let result, runs = deepSynchronousRecursion (async2 { return () }) 100_000
+        Assert.Equal(100_000, result)
+        Assert.Equal(1, runs)
+
+    /// After the start suspended and resumed on another thread, no trampoline runs below the frames, so deep nested
+    /// starts bounce to the thread pool whenever the stack runs low.
+    [<Fact>]
+    let ``Deep synchronous recursion completes after the start suspended and resumed on another thread`` () =
+        let result, _ = deepSynchronousRecursion (async2 { do! Task.Yield() }) 100_000
+        Assert.Equal(100_000, result)
+
     [<Fact>]
     let ``Tail call propagates an exception from a frame that runs after the chain suspended`` () =
         let failure = InvalidOperationException("boom")

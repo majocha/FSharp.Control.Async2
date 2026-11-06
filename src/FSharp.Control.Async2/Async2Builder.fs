@@ -63,13 +63,14 @@ type Async2Start =
             /// read of the parent that awaits it, also when the parent resumes on another thread.
             mutable Failure: ExceptionDispatchInfo option
 
-            /// The managed thread id of the thread whose drain loop runs for this start, or 0. Other threads read it,
-            /// so it is one word.
-            mutable Owner: int
+            /// The managed thread id of the thread that runs the synchronous part of this start, with its trampoline
+            /// further down the stack, or 0 once the synchronous part has returned. Other threads read it, so it is
+            /// one word.
+            mutable TrampolineThread: int
 
-            /// The continuations that nested starts bounced to the drain loop, created at the first bounce. Only the
-            /// owner thread touches it.
-            mutable Queue: Queue<Action> option
+            /// The continuations that nested starts bounced to the trampoline, created at the first bounce. Only the
+            /// trampoline thread touches it.
+            mutable TrampolineQueue: Queue<Action> option
         }
 
 type Async2Invocation<'R> = Async2Context<'R> -> Task<'R>
@@ -95,39 +96,44 @@ and [<Struct; NoEquality; NoComparison; EditorBrowsable(EditorBrowsableState.Nev
     /// The token of the start. Every start nested in it runs with the same token.
     member ctx.CancellationToken = ctx.Start.CancellationToken
 
-/// The drain loop of a start runs on the thread that made the start, further down the stack than the frames that run
-/// inline. A nested start that bounces because the stack runs low queues its continuation there, and the loop runs it
-/// when the synchronous part of the start returns.
+/// The trampoline of a start covers only its synchronous part: from the start until it completes or first suspends,
+/// on the thread that made the start. It sits at the bottom of that stack, below the frames that run inline. A nested
+/// start that bounces because the stack runs low queues its continuation there, and the trampoline runs it when the
+/// synchronous part returns. So a computation that never suspends completes on the calling thread, before the start
+/// returns, like FSharp.Core async.
+///
+/// After the start suspends, its frames resume wherever the awaited operation completes them, and the computation has
+/// no thread to stay on. A bounce then goes to the thread pool instead (see `Async2Start.start`).
 module internal Trampoline =
-    /// True when the drain loop of `start` runs further down the stack of this thread.
-    let ownedBy (start: Async2Start) =
-        Volatile.Read(&start.Owner) = Environment.CurrentManagedThreadId
+    /// True while the synchronous part of `start` runs on this thread, with the trampoline further down the stack.
+    let isRunningHere (start: Async2Start) =
+        Volatile.Read(&start.TrampolineThread) = Environment.CurrentManagedThreadId
 
-    /// Queues a continuation on the drain loop of `start`. Only the owner thread calls it.
+    /// Queues a continuation on the trampoline of `start`. Only the trampoline thread calls it.
     let enqueue (start: Async2Start) (continuation: Action) =
-        match start.Queue with
+        match start.TrampolineQueue with
         | Some queue -> queue.Enqueue continuation
         | None ->
             let queue = Queue<Action>()
             queue.Enqueue continuation
-            start.Queue <- Some queue
+            start.TrampolineQueue <- Some queue
 
-    /// Runs `action` with the drain loop of the new `start` on this thread, then runs every continuation queued
-    /// meanwhile. Queued continuations never throw.
-    let inline run (start: Async2Start) ([<InlineIfLambda>] action: unit -> 'T) =
-        start.Owner <- Environment.CurrentManagedThreadId
+    /// Runs `synchronousPart` of the new `start` on this thread with the trampoline below it, then runs every
+    /// continuation queued meanwhile. Queued continuations never throw.
+    let inline runSynchronousPart (start: Async2Start) ([<InlineIfLambda>] synchronousPart: unit -> 'T) =
+        start.TrampolineThread <- Environment.CurrentManagedThreadId
 
         try
-            action ()
+            synchronousPart ()
         finally
             try
-                match start.Queue with
+                match start.TrampolineQueue with
                 | Some queue ->
                     while queue.Count > 0 do
                         queue.Dequeue().Invoke()
                 | None -> ()
             finally
-                Volatile.Write(&start.Owner, 0)
+                Volatile.Write(&start.TrampolineThread, 0)
 
     /// A nested start runs inline unless the stack runs low, so a bounce happens only where running inline would
     /// overflow. A bounced child is incomplete when its parent awaits it, so under a SynchronizationContext or a
@@ -248,8 +254,8 @@ module TailChain =
 
 module internal Async2Start =
 
-    /// Suspends the frame that awaits it and queues the continuation of that frame on the drain loop of `start`, so
-    /// the loop resumes it on a shallow stack.
+    /// Suspends the frame that awaits it and queues the continuation of that frame on the trampoline of `start`, so
+    /// the trampoline resumes it on a shallow stack.
     [<Struct; NoEquality; NoComparison>]
     type private BounceAwaiter(start: Async2Start) =
         member _.IsCompleted = false
@@ -259,43 +265,45 @@ module internal Async2Start =
             member _.OnCompleted continuation = Trampoline.enqueue start continuation
             member _.UnsafeOnCompleted continuation = Trampoline.enqueue start continuation
 
-    /// Starts a nested computation that is too deep to run inline: this frame suspends at once and resumes from the
-    /// drain loop, where it runs the computation. The parent awaits the task of this frame.
-    let private bounced (start: Async2Start) (invocation: Async2Invocation<'T>) : Task<'T> =
+    /// Starts a nested computation that is too deep to run inline, during the synchronous part of `start`: this frame
+    /// suspends at once and resumes from the trampoline, where it runs the computation. The parent awaits the task of
+    /// this frame.
+    let private bounceToTrampoline (start: Async2Start) (invocation: Async2Invocation<'T>) : Task<'T> =
         __runtimeAsyncReturn (
             AsyncHelpers.UnsafeAwaitAwaiter(BounceAwaiter start)
             invocation { Start = start; Chain = None } |> ExceptionCache.await start
         )
 
-    /// Starts on a thread pool thread, which has an empty stack. `Task.Run` flows the execution context into the
-    /// start, and the parent resumes when the start completes.
-    let private startOnFreshStack (start: Async2Start) (invocation: Async2Invocation<'T>) =
+    /// Starts a nested computation that is too deep to run inline, after `start` suspended: on a thread pool thread,
+    /// which has an empty stack. `Task.Run` flows the execution context into the computation, and the parent resumes
+    /// when it completes.
+    let private bounceToThreadPool (start: Async2Start) (invocation: Async2Invocation<'T>) =
         Task.Run<'T>(fun () -> invocation { Start = start; Chain = None })
 
-    /// Starts with a new start state and a drain loop for it on this thread, so the caller observes all synchronous
-    /// progress.
+    /// Starts with a new start state and runs its synchronous part on this thread with a trampoline below it, so the
+    /// caller observes all synchronous progress.
     let startIsolated (invocation: Async2Invocation<'T>) cancellationToken =
         let start =
             {
                 CancellationToken = cancellationToken
                 Failure = None
-                Owner = 0
-                Queue = None
+                TrampolineThread = 0
+                TrampolineQueue = None
             }
 
-        Trampoline.run start (fun () -> invocation { Start = start; Chain = None })
+        Trampoline.runSynchronousPart start (fun () -> invocation { Start = start; Chain = None })
 
     /// A start nested in another one, which awaits it. It runs inline when the stack has room. On a low stack it
-    /// bounces to the drain loop of its start when that loop runs further down this stack. Otherwise nothing drains
-    /// further down, so it continues on a fresh stack. That happens only away from the thread that made the start,
-    /// for example after a frame resumed on the thread pool, or after the synchronous part of the start returned.
+    /// bounces: to the trampoline during the synchronous part of its start, which keeps it on the calling thread, and
+    /// to the thread pool after the start suspended, when the computation already left the calling thread or no
+    /// longer runs above the trampoline.
     let start (start: Async2Start) (invocation: Async2Invocation<'T>) =
         if Trampoline.canRunInline () then
             invocation { Start = start; Chain = None }
-        elif Trampoline.ownedBy start then
-            bounced start invocation
+        elif Trampoline.isRunningHere start then
+            bounceToTrampoline start invocation
         else
-            startOnFreshStack start invocation
+            bounceToThreadPool start invocation
 
 /// Bound with `let!` in `async2` or `asyncSeq2` to read the token the computation was started with,
 /// without starting another computation the way `Async2.CancellationToken` does.
